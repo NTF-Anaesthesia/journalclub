@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function member(uid) { return exists(/databases/$(database)/documents/members/$(uid)); }
+    function isMember() { return signedIn() && member(request.auth.uid); }
+    function isAdmin() {
+      return isMember()
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Allow-list. A person reads their own row; admins read and change every row.
+    // Joining is only possible by redeeming an unused, unexpired invite in the same batch.
+    match /members/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email', 'name', 'role', 'inviteId', 'joinedAt'])
+        && request.resource.data.role == 'member'
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.joinedAt == request.time
+        && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.usedBy == uid
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.used == false;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'name']);
+      allow delete: if isAdmin() && request.auth.uid != uid;
+    }
+
+    // One-time invite links. The id is the unguessable token, so a signed-in person can
+    // fetch one invite by id but nobody except admins can list them.
+    match /invites/{token} {
+      allow get: if signedIn();
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['createdBy', 'createdAt', 'expiresAt', 'used', 'note'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.used == false
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt > request.time
+        && request.resource.data.expiresAt <= request.time + duration.value(30, 'd');
+      allow update: if signedIn()
+        && resource.data.used == false
+        && resource.data.expiresAt > request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt'])
+        && request.resource.data.used == true
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.usedAt == request.time
+        && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.inviteId == token;
+      allow delete: if isAdmin();
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}
