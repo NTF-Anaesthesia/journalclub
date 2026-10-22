@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged,
   connectAuthEmulator, createUserWithEmailAndPassword, signInWithEmailAndPassword,
 } from 'firebase/auth';
 import {
@@ -10,7 +10,9 @@ import {
 import { firebaseConfig } from './config.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
-const app = initializeApp(emulator ? { ...firebaseConfig, projectId: 'demo-jc' } : firebaseConfig);
+// On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.
+const live = location.hostname === 'journalclub.anantf.com' ? { authDomain: location.hostname } : {};
+const app = initializeApp(emulator ? { ...firebaseConfig, projectId: 'demo-jc' } : { ...firebaseConfig, ...live });
 const EMU_SECRET = ['emu', 'only', '1'].join('-');
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -74,8 +76,9 @@ function renderBar() {
 function signInButton() {
   const b = el('<button class="primary" id="gsign">Sign in with Google</button>');
   b.onclick = async () => {
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
-    catch (e) { if (e.code !== 'auth/popup-closed-by-user') alert('Sign-in failed: ' + e.code); }
+    // Redirect, not popup: popups lose their way back in installed web apps (Firefox web app, home-screen apps).
+    try { await signInWithRedirect(auth, new GoogleAuthProvider()); }
+    catch (e) { alert('Sign-in failed: ' + e.code); }
   };
   return b;
 }
@@ -213,5 +216,6 @@ onAuthStateChanged(auth, async (u) => {
   ready = true;
   render();
 });
+getRedirectResult(auth).catch((e) => alert('Sign-in failed: ' + e.code));
 window.addEventListener('hashchange', render);
 render();
