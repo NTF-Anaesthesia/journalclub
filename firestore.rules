@@ -78,6 +78,13 @@ service cloud.firestore {
       allow update: if (mayEditPaper(pid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file'])
         && request.resource.data.tags is list && request.resource.data.tags.size() <= 20)
+        // An admin's "Refresh abstracts" rewrites bibliographic fields (doi/pmid only where the paper had none).
+        || (isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'authors', 'abstract', 'doi', 'pmid'])
+        && request.resource.data.title is string && request.resource.data.title.size() > 0
+        && request.resource.data.authors is list
+        && (!('doi' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('doi', '') == '')
+        && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == ''))
         // Any member planning a session keeps the paper's `presented` summary in step (written in the session's batch).
         || (isMember()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presented'])

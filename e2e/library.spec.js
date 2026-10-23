@@ -198,3 +198,30 @@ test('paper page decodes stored entities in the title and abstract, and bolds se
   await expect(box).toContainText('≤ 35');
   expect(await box.innerHTML()).not.toMatch(/&amp;#x|&#x/);
 });
+
+test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named paper, and leaves tags alone', async ({ page }) => {
+  await fakeApi(page);
+  const uid = await signInAsMember(page, 'res4@example.org');
+  const api = 'http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents';
+  const headers = { Authorization: 'Bearer owner' };
+  const s = (v) => ({ stringValue: v });
+  expect((await page.request.patch(`${api}/members/${uid}`, { headers, data: { fields: {
+    email: s('res4@example.org'), name: s('Res Four'), role: s('admin'), inviteId: s('seed') } } })).ok()).toBeTruthy();
+  const seed = (id, fields) => page.request.patch(`${api}/papers/${id}`, { headers, data: { fields: {
+    pmid: s(''), abstract: s(''), addedBy: s(uid), tags: { arrayValue: { values: [s('keep')] } }, ...fields } } });
+  expect((await seed('old1', { title: s('Alogliptin'), doi: s('10.1056/NEJMoa1305889'), abstract: s('Platelets 109/L') })).ok()).toBeTruthy();
+  expect((await seed('atotw1', { title: s('ATOTW 551 SGLT2'), doi: s('') })).ok()).toBeTruthy();
+  expect((await seed('none1', { title: s('ward round handout'), doi: s('') })).ok()).toBeTruthy();
+  await page.goto('/?emulator#/library');
+  await page.reload();
+  await page.getByRole('button', { name: 'Refresh abstracts' }).click();
+  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: [2-9] updated,/);
+  await expect(page.getByRole('link', { name: 'SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications' })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ })).toBeVisible();
+  await page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ }).click();
+  await expect(page.getByText('keep')).toBeVisible();
+  // A second run finds nothing to change.
+  await page.goto('/?emulator#/library');
+  await page.getByRole('button', { name: 'Refresh abstracts' }).click();
+  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: 0 updated,/);
+});
