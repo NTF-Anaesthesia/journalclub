@@ -141,3 +141,20 @@ test('a large PDF opens on page 1 from Range chunks, before the whole file has d
   expect(ranges.length).toBeGreaterThan(0);
   expect(ranges.reduce((a, b) => a + b, 0)).toBeLessThan(big.length / 2);
 });
+
+test('Download saves the PDF under the paper title; Send shares the file where the browser can', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.__shared = null;
+    navigator.canShare = (d) => !!d?.files?.length;
+    navigator.share = async (d) => { window.__shared = { name: d.files?.[0]?.name, type: d.files?.[0]?.type, size: d.files?.[0]?.size, title: d.title }; };
+  });
+  await page.goto(`/?emulator=${PROJECT}#/read/${ID}`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download' }).click()]);
+  expect(dl.suggestedFilename()).toBe('Reversal of neuromuscular block.pdf');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect.poll(() => page.evaluate(() => window.__shared)).toEqual({
+    name: 'Reversal of neuromuscular block.pdf', type: 'application/pdf', size: files.get(`papers/${ID}.pdf`).length, title: 'Reversal of neuromuscular block' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
