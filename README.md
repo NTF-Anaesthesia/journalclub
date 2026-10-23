@@ -27,7 +27,7 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
   best page and a snippet, so a hit opens the PDF at its page. Removing the PDF or the paper removes its rows.
   Older uploads kept their text in Firestore `texts/<paper>` (no longer written or read by the app): an admin copies it
   into D1 once from `#/reindex` (`POST /api/backfill`, safe to repeat).
-- Search (`#/`) is the default page. Journal club (`src/club.js`): the club home (`#/home`) shows the next session. Any member plans a
+- Search (`#/`) is the default page. Journal club (`src/club.js`): the club home (`#/home`, first tab: Club, Library, Saved) shows the next session (Today / In N days, your role, your take-home point, Add slides or Edit session), Upcoming, and the latest five Past sessions (Show all for the rest); a session page puts Join on Teams and your point under its details. Any member plans a
   session from the Plan a session sheet (`#/plan`, or `#/plan/<paper>` from a paper page): date, paper (search as you type),
   presenter, coordinator, optional Teams link. A session (`sessions/<id>`) is edited by its creator, presenter, member coordinator and
   admins; the creator and admins delete it. Each paper keeps a `presented: [{sid, date}]` summary, written in the session's batch, which
