@@ -7,7 +7,13 @@ import { localD1 } from '../test/d1.js';
 
 const LIVE = 'https://firestore.googleapis.com/v1/projects/journalclub-anantf/';
 
-export async function workerApi(page, project = 'demo-jc') {
+// A stand-in for the Workers AI binding: one canned summary, and a record of what was asked.
+export function fakeAi(response = 'A short neutral summary of this handout: it lists the steps of the ward round and who does what, for trainees.') {
+  const calls = [];
+  return { calls, run: async (model, req) => { calls.push({ model, req }); return { response }; } };
+}
+
+export async function workerApi(page, project = 'demo-jc', { ai = fakeAi() } = {}) {
   const EMU = `http://127.0.0.1:8080/v1/projects/${project}/`;
   const d1 = await localD1();
   const store = new Map();
@@ -23,9 +29,9 @@ export async function workerApi(page, project = 'demo-jc') {
     const r = route.request();
     calls.push(`${r.method()} ${new URL(r.url()).pathname}`);
     const body = ['GET', 'HEAD'].includes(r.method()) ? undefined : r.postDataBuffer();
-    const res = await api(new Request(r.url(), { method: r.method(), headers: r.headers(), body }), { FILES, SEARCH: d1.db }, fetchFn);
+    const res = await api(new Request(r.url(), { method: r.method(), headers: r.headers(), body }), { FILES, SEARCH: d1.db, AI: ai }, fetchFn);
     await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
   });
   page.on('close', () => d1.dispose());
-  return { files: store, calls, db: d1.db };
+  return { files: store, calls, db: d1.db, ai };
 }

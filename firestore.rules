@@ -72,6 +72,8 @@ service cloud.firestore {
         || request.resource.data.changedAt == request.time;
     }
 
+    function changed(k) { return k in request.resource.data.diff(resource.data).affectedKeys(); }
+
     match /papers/{pid} {
       allow read: if isMember();
       allow create: if isMember()
@@ -88,11 +90,30 @@ service cloud.firestore {
         && changedAtNowIfSet())
         // An admin's "Refresh abstracts" rewrites bibliographic fields (doi/pmid only where the paper had none).
         || (isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'authors', 'abstract', 'doi', 'pmid', 'changedAt'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'authors', 'abstract', 'doi', 'pmid', 'year', 'abstractSource', 'changedAt'])
         && request.resource.data.title is string && request.resource.data.title.size() > 0
         && request.resource.data.authors is list
         && (!('doi' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('doi', '') == '')
         && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == '')
+        && changedAtNowIfSet())
+        // Any member edits a paper's details by hand ("Edit details"): `manual` lists the fields they typed, so
+        // Refresh and "Fill missing details" leave those alone. Each field is checked only when it changes.
+        || (isMember()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'authors', 'journal', 'year', 'doi', 'pmid',
+             'abstract', 'abstractSource', 'manual', 'tags', 'why', 'changedAt'])
+        && (!changed('title') || (request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 500))
+        && (!changed('authors') || (request.resource.data.authors is list && request.resource.data.authors.size() <= 100))
+        && (!changed('journal') || (request.resource.data.journal is string && request.resource.data.journal.size() <= 300))
+        && (!changed('year') || request.resource.data.year == null
+            || (request.resource.data.year is int && request.resource.data.year >= 1800 && request.resource.data.year <= 2100))
+        && (!changed('doi') || (request.resource.data.doi is string && request.resource.data.doi.size() <= 200
+            && (request.resource.data.doi == '' || request.resource.data.doi.matches('10[.].*'))))
+        && (!changed('pmid') || (request.resource.data.pmid is string && request.resource.data.pmid.matches('[0-9]{0,9}')))
+        && (!changed('abstract') || (request.resource.data.abstract is string && request.resource.data.abstract.size() <= 20000))
+        && (!changed('abstractSource') || request.resource.data.abstractSource in ['lookup', 'pdf', 'ai', 'hand'])
+        && (!changed('manual') || (request.resource.data.manual is list && request.resource.data.manual.size() <= 10))
+        && (!changed('tags') || (request.resource.data.tags is list && request.resource.data.tags.size() <= 20))
+        && (!changed('why') || (request.resource.data.why is string && request.resource.data.why.size() <= 200))
         && changedAtNowIfSet())
         // Any member tags papers (one at a time or in bulk from select mode); tags only.
         || (isMember()

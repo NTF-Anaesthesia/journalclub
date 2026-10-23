@@ -6,7 +6,8 @@
 // member's own row (and a paper) from the Firestore REST API with that token, so Firestore checks the
 // token and the rules decide, exactly as in the browser.
 import { lookup } from './lookup.js';
-import { cleanPages, indexPages, indexNotes, removeFromIndex, search, indexedPapers } from './search.js';
+import { cleanPages, indexPages, indexNotes, removeFromIndex, search, indexedPapers, firstPages } from './search.js';
+import { enrich } from './enrich.js';
 import { MAX_SLIDES, pullUrls, pull, storeSlides, serveSlides, deleteSlides } from './slides.js';
 
 const AUTH_HELPER = 'https://journalclub-anantf.firebaseapp.com';
@@ -90,6 +91,18 @@ async function searchApi(request, url, env, member, fetchFn) {
     if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
     return backfill(member, env, await request.json().catch(() => ({})), fetchFn);
   }
+  const en = /^\/api\/enrich\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
+  if (en) {
+    if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+    if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
+    const paper = await paperAs(member, en[1], fetchFn);
+    if (!paper) return json({ error: 'No such paper' }, 404);
+    const body = await request.json().catch(() => ({}));
+    const pages = await firstPages(env.SEARCH, en[1]);
+    const out = await enrich({ pages, paper: { title: field(paper, 'title') || '', doi: field(paper, 'doi') || '' }, fetchFn,
+      email: env.CONTACT_EMAIL || 'journalclub@anantf.com', ai: body.ai ? env.AI : null });
+    return json(out);
+  }
   const m = /^\/api\/index\/([A-Za-z0-9_-]{1,64})(\/notes)?$/.exec(url.pathname);
   if (!m) return json({ error: 'Not found' }, 404);
   const [, paperId, notes] = m;
@@ -163,7 +176,7 @@ export async function api(request, env, fetchFn = fetch) {
     return json(out, out.error ? 404 : 200);
   }
 
-  if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/')) {
+  if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/') || url.pathname.startsWith('/api/enrich/')) {
     return searchApi(request, url, env, member, fetchFn);
   }
   const sl = /^\/api\/slides\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original))?$/.exec(url.pathname);

@@ -1,5 +1,5 @@
 // Select mode's actions on many papers at once, and the sheets and snackbar they use.
-// Members: Add to… (reading lists and tags), Star, citations. Admins also: Refresh abstracts, Reindex PDFs,
+// Members: Add to… (reading lists and tags), Star, citations. Admins also: Refresh abstracts, Fill missing details, Reindex PDFs,
 // Remove, and the Find duplicates page with merge.
 import {
   doc, getDoc, getDocs, setDoc, addDoc, deleteDoc, updateDoc, writeBatch, collection, query, where,
@@ -8,7 +8,7 @@ import {
 import { current, forget, restore, dirty } from './catalogue.js';
 import { loadLists, loadStarred, setStarred, starredStub } from './prefs.js';
 import { tagCounts, triState } from './filters.js';
-import { refreshId, refreshChanges } from './refresh.js';
+import { refreshId, refreshChanges, fillChanges } from './refresh.js';
 import { vancouverList, bibtex } from './cite.js';
 import { findDuplicates, pickKeep, keepAllowed, mergePaper, mergeNotes } from './dupes.js';
 import { cleanPaper } from './abstract.js';
@@ -199,15 +199,16 @@ const listeners = new Set();
 const tell = () => listeners.forEach((f) => f());
 export const onJob = (f) => { listeners.add(f); return () => listeners.delete(f); };
 
-async function runJob(kind, items, step, rows, onDone) {
-  job = { kind, total: items.length, done: 0, counts: Object.fromEntries(rows.map(([k]) => [k, 0])), rows, missing: [], running: true, stop: false, started: Date.now() };
+const REFRESH_MISSING = ['noAbstract', 'notFound', 'noId', 'failed'];
+async function runJob(kind, items, step, rows, onDone, missingKeys = REFRESH_MISSING, always = []) {
+  job = { kind, always, total: items.length, done: 0, counts: Object.fromEntries(rows.map(([k]) => [k, 0])), rows, missing: [], running: true, stop: false, started: Date.now() };
   tell();
   for (const id of items) {
     if (job.stop) break;
     let out;
     try { out = await step(id); } catch (e) { console.error(e); out = 'failed'; }
     job.counts[out] = (job.counts[out] || 0) + 1;
-    if (['noAbstract', 'notFound', 'noId', 'failed'].includes(out)) job.missing.push(id);
+    if (missingKeys.includes(out)) job.missing.push(id);
     job.done++;
     tell();
   }
@@ -218,6 +219,8 @@ async function runJob(kind, items, step, rows, onDone) {
 
 const REFRESH_ROWS = [['added', 'Abstract added', 'good'], ['updated', 'Updated', 'good'], ['unchanged', 'Already up to date', 'plain'],
   ['noAbstract', 'Found, still no abstract', 'plain'], ['notFound', 'Not found', 'warn'], ['noId', 'Skipped, no ID', 'bad']];
+const FILL_ROWS = [['lookup', 'Details and abstract from a lookup', 'good'], ['pdf', 'Abstract from the PDF', 'good'], ['ai', 'AI summary added', 'good'],
+  ['partial', 'Details added, no abstract', 'plain'], ['nothing', 'Nothing found', 'warn'], ['noText', 'No PDF text (Reindex first)', 'bad'], ['failed', 'Could not read', 'bad']];
 const REINDEX_ROWS = [['indexed', 'Indexed', 'good'], ['empty', 'No text in the PDF', 'plain'], ['failed', 'Could not read', 'bad']];
 
 // Admin: look the selected papers up again by DOI, PubMed ID or ATOTW number; only bibliographic fields change.
@@ -243,6 +246,32 @@ export function refreshSelected(c, ids, onChange, onSelect) {
     if (!p.abstract && !fresh.abstract) return 'noAbstract';
     return Object.keys(ch).length ? 'updated' : 'unchanged';
   }, REFRESH_ROWS, () => { dirty(); onChange?.(); });
+  jobSheet(c, onSelect);
+}
+
+// Admin: for papers with a PDF, the Worker reads the PDF text it already holds for search: an ID printed there is
+// looked up, else the PDF's own abstract/summary is used, else a short AI summary. Only empty fields are filled;
+// anything typed by hand (`manual`) is left alone. Papers with no PDF text are counted, not guessed.
+export function fillSelected(c, ids, onChange, onSelect) {
+  if (job?.running) return jobSheet(c, onSelect);
+  const lib = current();
+  const doiOwner = new Map([...lib.papers].filter(([, p]) => p.doi).map(([id, p]) => [p.doi, id]));
+  runJob('fill', ids, async (id) => {
+    const snap = await getDoc(doc(c.db, 'papers', id));
+    if (!snap.exists()) return 'failed';
+    const p = snap.data();
+    if (!p.file) return 'noText';
+    const r = await api(c, `/api/enrich/${id}`, { method: 'POST', body: JSON.stringify({ ai: true }), headers: { 'Content-Type': 'application/json' } });
+    if (!r.ok) return 'failed';
+    const res = await r.json();
+    if (!res.hasText) return 'noText';
+    const taken = new Set([...doiOwner].filter(([, owner]) => owner !== id).map(([doi]) => doi));
+    const ch = fillChanges(p, res, taken);
+    if (!Object.keys(ch).length) return 'nothing';
+    await updateDoc(snap.ref, { ...ch, changedAt: serverTimestamp() });
+    restore(id, cleanPaper({ ...p, ...ch }));
+    return ch.abstract ? ch.abstractSource : 'partial';
+  }, FILL_ROWS, () => { dirty(); onChange?.(); }, ['nothing', 'noText', 'failed', 'partial'], ['lookup', 'pdf', 'ai', 'nothing', 'noText']);
   jobSheet(c, onSelect);
 }
 
@@ -278,15 +307,17 @@ export function reindexSelected(c, ids, onChange, onSelect) {
 // The progress sheet; Hide leaves the job running (the library page shows a line to reopen it).
 export function jobSheet(c, onSelect) {
   if (!job) return;
-  const title = job.kind === 'refresh' ? 'Refreshing' : 'Reindexing';
+  const title = { refresh: 'Refreshing', fill: 'Filling', reindex: 'Reindexing' }[job.kind];
   const d = sheet(c, `${title} papers`, `<h2 class="sheet-title"></h2><p class="muted" id="jx"></p>
     <div class="progress-row"><strong id="jn"></strong><span class="muted" id="jt"></span></div>
     <div class="bar" role="progressbar" aria-label="Progress" aria-valuemin="0"><div></div></div>
     <ul class="list" id="jr"></ul><p id="jm"></p>
     <div class="sheet-buttons"><button type="button" id="jstop">Stop</button><button type="button" class="primary" id="jhide">Hide</button></div>`);
-  d.querySelector('#jx').textContent = job.kind === 'refresh'
-    ? 'Looks each one up by DOI, PubMed ID or ATOTW number. Only title, journal, authors and abstract change; tags, notes and PDFs never do. Keeps going if you hide this.'
-    : 'Reads each PDF again and sends its text to PDF search. Keeps going if you hide this.';
+  d.querySelector('#jx').textContent = {
+    refresh: 'Looks each one up by DOI, PubMed ID or ATOTW number. Only title, journal, authors and abstract change; tags, notes and PDFs never do. Keeps going if you hide this.',
+    fill: 'Reads the start of each PDF for a DOI, PubMed ID or ATOTW number to look up, else uses its own abstract or summary, else writes a short AI summary labelled “AI summary”. Only empty fields are filled; anything edited by hand stays. Keeps going if you hide this.',
+    reindex: 'Reads each PDF again and sends its text to PDF search. Keeps going if you hide this.',
+  }[job.kind];
   const draw = () => {
     if (!d.isConnected) return off();
     d.querySelector('.sheet-title').textContent = `${job.running ? title : 'Done:'} ${plural(job.total, 'paper')}`;
@@ -296,7 +327,7 @@ export function jobSheet(c, onSelect) {
     const bar = d.querySelector('.bar');
     bar.setAttribute('aria-valuemax', job.total); bar.setAttribute('aria-valuenow', job.done);
     bar.firstChild.style.width = `${job.total ? (100 * job.done) / job.total : 100}%`;
-    d.querySelector('#jr').replaceChildren(...job.rows.filter(([k]) => job.counts[k] || job.kind === 'refresh' && ['added', 'notFound', 'noId', 'noAbstract'].includes(k))
+    d.querySelector('#jr').replaceChildren(...job.rows.filter(([k]) => job.counts[k] || (job.kind === 'refresh' && ['added', 'notFound', 'noId', 'noAbstract'].includes(k)) || job.always.includes(k))
       .map(([k, label, tone]) => c.el(`<li><span class="dot-row"><span class="dot ${tone}"></span>${c.esc(label)}</span><b>${job.counts[k] || 0}</b></li>`)));
     const m = d.querySelector('#jm'); m.replaceChildren();
     if (!job.running && job.missing.length && onSelect) {
@@ -324,6 +355,7 @@ export function moreSheet(c, ids, acts) {
       <li><button type="button" id="mcite">Copy citations (Vancouver)</button></li>
       <li><button type="button" id="mbib">Export BibTeX</button></li>
       ${admin ? `<li><button type="button" id="mdup">Find duplicates</button></li>
+      <li><button type="button" id="mfill"${pdfs ? '' : ' disabled'}>Fill missing details (${plural(pdfs, 'PDF')})</button></li>
       <li><button type="button" id="mre"${pdfs ? '' : ' disabled'}>Reindex ${plural(pdfs, 'PDF')}</button></li>
       <li><button type="button" id="mrm" class="danger">Remove ${plural(ids.length, 'paper')}</button></li>` : ''}
     </ul>`);
@@ -337,6 +369,7 @@ export function moreSheet(c, ids, acts) {
   };
   if (!admin) return;
   d.querySelector('#mdup').onclick = () => { d.close(); location.hash = '#/duplicates'; };
+  d.querySelector('#mfill').onclick = () => { d.close(); acts.fill(); };
   d.querySelector('#mre').onclick = () => { d.close(); acts.reindex(); };
   d.querySelector('#mrm').onclick = () => { d.close(); acts.remove(); };
 }

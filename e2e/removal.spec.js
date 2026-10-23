@@ -79,7 +79,6 @@ test('the person who added a paper reaches the removal page from the paper page'
   const mem = await signInAs(browser, 'adder@example.org', 'Ann Adder', 'member');
   await seedPaper(mem, 'r3', 'Mine to remove', mem.uid);
   await mem.goto(`/?emulator=${PROJECT}#/paper/r3`);
-  await mem.getByText('Edit', { exact: true }).click();
   await mem.getByRole('link', { name: 'Remove this paper or its PDF…' }).click();
   await expect(mem.getByRole('heading', { name: 'Remove', exact: true })).toBeVisible();
   await expect(mem.getByRole('button', { name: 'Remove PDF' })).toHaveCount(0); // no PDF stored
