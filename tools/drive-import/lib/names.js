@@ -2,10 +2,14 @@
 import { titleInText } from '../../../worker/enrich.js';
 
 const SERIES = /^\s*AICM[\s_-]*\d{4,6}[\s_-]*/i;
+// Journal-series names: a leading "CEACCP", "BJAEd" or "ATOTW <n>" and a trailing "2001-Author-89-92" or "2001 Author".
+const JOURNAL_PREFIX = /^\s*(?:CEACCP|BJAEd|ATOTW[\s_-]*\d+)[\s_-]+/i;
+const CITATION_TAIL = /[\s_-]+(?:19|20)\d{2}[\s_-]+[A-Za-z'’]+(?:[\s_-]+[A-Za-z]?\d+){0,2}$/;
 
 // "AICM_202405 Acid-base-physiology_2023_mpaic.pdf" -> "Acid base physiology"
 export function titleFromFileName(name) {
   let t = String(name || '').replace(/\.pdf$/i, '');
+  if (JOURNAL_PREFIX.test(t)) t = t.replace(JOURNAL_PREFIX, '').replace(CITATION_TAIL, '');
   t = t.replace(SERIES, '').replace(/[_\s-]+\d{4}[_\s-]+(mpaic|Anaesthesia\b.*)$/i, '').replace(/[_\s-]mpaic$/i, '');
   t = t.replace(/_+/g, ' ');
   // A dash-joined name ("Acid-base-physiology") has no spaces; a name with spaces keeps its real hyphens ("CRASH-3").
