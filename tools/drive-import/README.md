@@ -35,4 +35,15 @@ node import.js ... --apply --max 100
 Statuses: `new`, `attach` (library paper without a PDF), `in-library` (skipped), `dup-in-batch`, `needs-ocr` (no text
 layer), `too-big` (over 25 MB), `error`, `done`.
 
+## DOI list (no PDFs)
+
+```
+node dois.js --key sa.json --csv list.csv [--tag extra] [--apply]
+```
+
+CSV columns `doi,pmid,short_name,year,takehome,tags` (tags split by `;`). Each row is looked up like "Add by DOI"
+(Crossref, PubMed, Unpaywall). New papers are added with the take-home as "why read it" and the tags; papers already in
+the library (same DOI, else title) only gain the tags, and the take-home if they have none. Without `--apply` it prints
+`new`, `update`, `same`, `dup-in-list` or `error` per row and writes nothing.
+
 Tests: `npm run test:unit` at the repo root (made-up text, no network).

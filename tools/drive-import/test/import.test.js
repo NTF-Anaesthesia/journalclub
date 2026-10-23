@@ -11,6 +11,7 @@ import { politeFetch, pool } from '../lib/throttle.js';
 import { ollamaAi } from '../lib/ollama.js';
 import { analyse, libraryIndex, csv, counts, MAX_PDF } from '../lib/pipeline.js';
 import { applyOne, paperFields, indexablePages } from '../lib/apply.js';
+import { listRows, planRow } from '../lib/doilist.js';
 import { fixtureFetch } from '../../../test/fixture-fetch.js';
 
 const PROSE = 'Sedation in the intensive care unit is given to relieve anxiety and to permit tolerance of the tube. '.repeat(4);
@@ -190,4 +191,14 @@ test('applyOne fails loudly when the Worker refuses the file', async () => {
   const path = join(dir, 'a.pdf'); writeFileSync(path, 'x');
   const io = { createPaper: async () => 'P', put: async () => ({ ok: false, status: 403 }), setFile: async () => {} };
   await assert.rejects(applyOne({ path }, { hash: 'h', status: 'new' }, { pagesOf: async () => ['a'], io, tags: [], save() {} }), /file upload 403/);
+});
+
+test('DOI list: CSV with quoted commas, tags merged, take-home only when missing', () => {
+  const rows = listRows('doi,pmid,short_name,year,takehome,tags\n10.1/ABC,1,Made-up A,2020,"Cut deaths, ""a lot""",icu; Trial\n,,empty,,,\n10.1/def,,B,2021,Line,\n', ['extra']);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], { id: '10.1/ABC', doi: '10.1/abc', name: 'Made-up A', why: 'Cut deaths, "a lot"', tags: ['icu', 'trial', 'extra'] });
+  assert.deepEqual(planRow(rows[0], null), { status: 'new' });
+  assert.deepEqual(planRow(rows[0], { id: 'p1', tags: ['icu'], why: '' }),
+    { status: 'update', id: 'p1', update: { tags: ['icu', 'trial', 'extra'], why: 'Cut deaths, "a lot"' } });
+  assert.deepEqual(planRow(rows[0], { id: 'p1', tags: ['trial', 'icu', 'extra'], why: 'Mine' }), { status: 'same', id: 'p1' });
 });
