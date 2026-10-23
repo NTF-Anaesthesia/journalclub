@@ -70,13 +70,16 @@ service cloud.firestore {
       allow read: if isMember();
       allow create: if isMember()
         && request.resource.data.keys().hasOnly(['doi', 'pmid', 'title', 'authors', 'journal', 'year', 'abstract',
-             'oa', 'tags', 'why', 'addedBy', 'addedAt'])
+             'oa', 'tags', 'why', 'addedBy', 'addedAt', 'changedAt'])
         && request.resource.data.addedBy == request.auth.uid
         && request.resource.data.addedAt == request.time
+        && request.resource.data.get('changedAt', request.time) == request.time
         && request.resource.data.title is string && request.resource.data.title.size() > 0
         && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
       allow update: if mayEditPaper(pid)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file', 'changedAt'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['changedAt'])
+            || request.resource.data.changedAt == request.time)
         && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
       allow delete: if mayEditPaper(pid);
 
@@ -102,11 +105,10 @@ service cloud.firestore {
     match /{path=**}/notes/{uid} { allow read: if isMember(); }
     match /{path=**}/votes/{uid} { allow read: if isMember(); }
 
-    // PDF text per page, written at upload by whoever may edit the paper.
+    // Old per-page PDF text, from before search moved to the Worker (D1). Read by the admin backfill; no new writes.
     match /texts/{pid} {
       allow read: if isMember();
-      allow write: if mayEditPaper(pid)
-        && (request.method == 'delete' || (request.resource.data.keys().hasOnly(['pages']) && request.resource.data.pages is list));
+      allow delete: if mayEditPaper(pid);
     }
 
     // Reading lists: any member makes one; its maker or an admin edits it.

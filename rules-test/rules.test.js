@@ -111,6 +111,15 @@ const newPaper = (uid, extra = {}) => ({
   oa: { status: 'closed', license: null, url: null }, tags: ['airway'], why: 'good', addedBy: uid, addedAt: serverTimestamp(), ...extra,
 });
 
+test('changedAt, when sent, must be the server time on create and update', async () => {
+  const m = as('mem1', 'm@x.org');
+  await assertSucceeds(setDoc(doc(m, 'papers/c1'), newPaper('mem1', { changedAt: serverTimestamp() })));
+  await assertFails(setDoc(doc(m, 'papers/c2'), newPaper('mem1', { changedAt: new Date(2020, 0, 1) })));
+  await assertSucceeds(updateDoc(doc(m, 'papers/c1'), { tags: ['x'], changedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(m, 'papers/c1'), { tags: ['y'], changedAt: new Date(2099, 0, 1) }));
+  await assertSucceeds(updateDoc(doc(m, 'papers/c1'), { why: 'no stamp' }));
+});
+
 test('members add papers as themselves; strangers cannot read or add', async () => {
   const m = as('mem1', 'm@x.org');
   await assertSucceeds(setDoc(doc(m, 'papers/p1'), newPaper('mem1')));
@@ -129,9 +138,13 @@ test('only the adder or an admin edits a paper, and only tags, why and file', as
   await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'papers/p1'), { why: 'admin edit' }));
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
   await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { why: 'not mine' }));
-  await assertFails(setDoc(doc(as('mem2', 'm2@x.org'), 'texts/p1'), { pages: ['x'] }));
-  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'texts/p1'), { pages: ['page one'] }));
+  // Old PDF text: no new writes; members read it (for the admin backfill); the adder or an admin deletes it.
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'texts/p1'), { pages: ['page one'] }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'texts/p1'), { pages: ['page one'] }));
   await assertSucceeds(getDoc(doc(as('mem2', 'm2@x.org'), 'texts/p1')));
+  await assertSucceeds(getDocs(collection(as('admin1', 'a@x.org'), 'texts')));
+  await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'texts/p1')));
+  await assertSucceeds(deleteDoc(doc(as('mem1', 'm@x.org'), 'texts/p1')));
   await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1')));
   await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1')));
 });

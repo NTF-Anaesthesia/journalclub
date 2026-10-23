@@ -6,6 +6,7 @@
 // member's own row (and a paper) from the Firestore REST API with that token, so Firestore checks the
 // token and the rules decide, exactly as in the browser.
 import { lookup } from './lookup.js';
+import { cleanPages, indexPages, indexNotes, removeFromIndex, search } from './search.js';
 
 const AUTH_HELPER = 'https://journalclub-anantf.firebaseapp.com';
 const FIRESTORE = 'https://firestore.googleapis.com/v1/projects/journalclub-anantf/databases/(default)/documents';
@@ -39,9 +40,78 @@ export async function memberFrom(request, fetchFn) {
   return { uid, token, role: field(doc, 'role') };
 }
 
-async function paperAs(member, paperId, fetchFn) {
-  const r = await fetchFn(`${FIRESTORE}/papers/${paperId}`, { headers: { Authorization: `Bearer ${member.token}` } });
+async function getAs(member, path, fetchFn) {
+  const r = await fetchFn(`${FIRESTORE}/${path}`, { headers: { Authorization: `Bearer ${member.token}` } });
   return r.ok ? r.json() : null;
+}
+const paperAs = (member, paperId, fetchFn) => getAs(member, `papers/${paperId}`, fetchFn);
+const docId = (d) => d.name.split('/').pop();
+const strings = (v) => (v?.arrayValue?.values || []).map((x) => x.stringValue ?? '');
+
+// The notes on one paper, read as the caller (members read all notes).
+async function noteTexts(member, paperId, fetchFn) {
+  const out = await getAs(member, `papers/${paperId}/notes?pageSize=300`, fetchFn);
+  return (out?.documents || []).map((d) => field(d, 'text')).filter(Boolean);
+}
+
+// Admin, one batch per call so a call stays within the Worker's subrequest and D1 query limits.
+// Phase "texts" moves the old Firestore texts/<paper> pages into D1; phase "notes" indexes every paper's notes.
+async function backfill(member, env, body, fetchFn) {
+  const phase = body.phase === 'notes' ? 'notes' : 'texts';
+  const token = typeof body.pageToken === 'string' ? `&pageToken=${encodeURIComponent(body.pageToken)}` : '';
+  let indexed = 0;
+  if (phase === 'texts') {
+    const out = await getAs(member, `texts?pageSize=5${token}`, fetchFn);
+    if (!out) return json({ error: 'Could not read the stored texts' }, 502);
+    for (const d of out.documents || []) {
+      const pages = cleanPages(strings(d.fields?.pages).slice(0, 2000));
+      if (pages) { await indexPages(env.SEARCH, docId(d), pages); indexed++; }
+    }
+    const next = out.nextPageToken ? { phase, pageToken: out.nextPageToken } : { phase: 'notes' };
+    return json({ phase, indexed, next });
+  }
+  const out = await getAs(member, `papers?pageSize=10&mask.fieldPaths=title${token}`, fetchFn);
+  if (!out) return json({ error: 'Could not read the papers' }, 502);
+  for (const d of out.documents || []) {
+    const texts = await noteTexts(member, docId(d), fetchFn);
+    if (texts.length) { await indexNotes(env.SEARCH, docId(d), texts); indexed++; }
+  }
+  return json({ phase, indexed, next: out.nextPageToken ? { phase, pageToken: out.nextPageToken } : null });
+}
+
+async function searchApi(request, url, env, member, fetchFn) {
+  if (!env.SEARCH) return json({ error: 'Search is not set up yet' }, 503);
+  if (url.pathname === '/api/search' && request.method === 'GET') {
+    return json({ hits: await search(env.SEARCH, (url.searchParams.get('q') || '').slice(0, 200)) });
+  }
+  if (url.pathname === '/api/backfill' && request.method === 'POST') {
+    if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
+    return backfill(member, env, await request.json().catch(() => ({})), fetchFn);
+  }
+  const m = /^\/api\/index\/([A-Za-z0-9_-]{1,64})(\/notes)?$/.exec(url.pathname);
+  if (!m) return json({ error: 'Not found' }, 404);
+  const [, paperId, notes] = m;
+  const paper = await paperAs(member, paperId, fetchFn);
+  if (!paper) return json({ error: 'No such paper' }, 404);
+  // Any member may refresh the notes row: its text comes from Firestore, not from the caller.
+  if (notes && request.method === 'POST') {
+    await indexNotes(env.SEARCH, paperId, await noteTexts(member, paperId, fetchFn));
+    return json({ ok: true });
+  }
+  if (notes) return json({ error: 'Method not allowed' }, 405);
+  const mayEdit = member.role === 'admin' || field(paper, 'addedBy') === member.uid;
+  if (!mayEdit) return json({ error: 'Only the person who added the paper, or an admin, can change its search text' }, 403);
+  if (request.method === 'PUT') {
+    if (Number(request.headers.get('Content-Length') || 0) > 4 * 1024 * 1024) return json({ error: 'Too much text' }, 413);
+    const pages = cleanPages((await request.json().catch(() => ({}))).pages);
+    if (!pages) return json({ error: 'Send { pages: [text of page 1, …] }' }, 400);
+    return json({ ok: true, pages: await indexPages(env.SEARCH, paperId, pages) });
+  }
+  if (request.method === 'DELETE') {
+    await removeFromIndex(env.SEARCH, paperId);
+    return json({ ok: true });
+  }
+  return json({ error: 'Method not allowed' }, 405);
 }
 
 export async function api(request, env, fetchFn = fetch) {
@@ -53,6 +123,10 @@ export async function api(request, env, fetchFn = fetch) {
   if (url.pathname === '/api/lookup' && request.method === 'GET') {
     const out = await lookup(url.searchParams.get('id'), fetchFn, email);
     return json(out, out.error ? 404 : 200);
+  }
+
+  if (url.pathname === '/api/search' || url.pathname === '/api/backfill' || url.pathname.startsWith('/api/index/')) {
+    return searchApi(request, url, env, member, fetchFn);
   }
 
   const m = /^\/api\/file\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
@@ -76,6 +150,7 @@ export async function api(request, env, fetchFn = fetch) {
 
   if (request.method === 'DELETE') {
     await env.FILES.delete(key);
+    if (env.SEARCH) await removeFromIndex(env.SEARCH, paperId, { pdfOnly: true });
     return json({ ok: true });
   }
 

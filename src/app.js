@@ -4,8 +4,8 @@ import {
   connectAuthEmulator, createUserWithEmailAndPassword, signInWithEmailAndPassword,
 } from 'firebase/auth';
 import {
-  getFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, collection, setDoc, deleteDoc, updateDoc,
-  writeBatch, serverTimestamp, Timestamp, query, orderBy,
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
+  doc, getDoc, getDocs, collection, setDoc, deleteDoc, updateDoc, writeBatch, serverTimestamp, Timestamp, query, orderBy,
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
@@ -14,10 +14,13 @@ import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTem
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
 // On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.
 const live = location.hostname === 'journalclub.anantf.com' ? { authDomain: location.hostname } : {};
-const app = initializeApp(emulator ? { ...firebaseConfig, projectId: 'demo-jc' } : { ...firebaseConfig, ...live });
+// ?emulator=demo-<name> gives a test its own emulator project (the 1000-paper e2e), else demo-jc.
+const emuProject = /^demo-[a-z0-9-]{1,30}$/.test(new URLSearchParams(location.search).get('emulator')) ? new URLSearchParams(location.search).get('emulator') : 'demo-jc';
+const app = initializeApp(emulator ? { ...firebaseConfig, projectId: emuProject } : { ...firebaseConfig, ...live });
 const EMU_SECRET = ['emu', 'only', '1'].join('-');
 const auth = getAuth(app);
-const db = getFirestore(app);
+// Persistent cache: the library catalogue is read from IndexedDB on repeat opens (src/library.js loadLibrary).
+const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 
 if (emulator) {
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });

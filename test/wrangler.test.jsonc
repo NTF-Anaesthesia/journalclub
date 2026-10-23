@@ -1,0 +1,6 @@
+// Test-only config: just the D1 binding, so tests need no Cloudflare account.
+{
+  "name": "journalclub-test",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [{ "binding": "SEARCH", "database_name": "journalclub-search", "database_id": "00000000-0000-0000-0000-000000000000" }]
+}

@@ -1,35 +1,40 @@
 import MiniSearch from 'minisearch';
 import { decodeEntities } from './abstract.js';
 
-// One search document per paper (metadata, abstract, notes) and one per stored PDF page,
-// so a hit inside a PDF can open at its page.
-export function buildIndex(papers, notes, texts) {
+// Metadata only (title, authors, journal, tags, why, abstract), built on the phone over the cached catalogue.
+// PDF pages and notes are searched by the Worker (GET /api/search); mergeHits joins the two.
+export function buildIndex(papers) {
   const ms = new MiniSearch({
-    fields: ['title', 'authors', 'journal', 'tags', 'why', 'abstract', 'notes', 'text'],
-    storeFields: ['paperId', 'page'],
+    fields: ['title', 'authors', 'journal', 'tags', 'why', 'abstract'],
+    storeFields: [],
     searchOptions: { prefix: true, fuzzy: 0.2, combineWith: 'AND', boost: { title: 3, tags: 2, why: 1.5 } },
   });
-  const docs = [];
-  for (const [id, p] of papers) {
-    docs.push({
-      id: `p:${id}`, paperId: id, page: null,
-      title: p.title, authors: (p.authors || []).join(' '), journal: p.journal, tags: (p.tags || []).join(' '),
-      why: p.why, abstract: decodeEntities(p.abstract), notes: (notes.get(id) || []).map((n) => n.text).join(' '),
-    });
-    (texts.get(id) || []).forEach((text, i) => { if (text) docs.push({ id: `t:${id}:${i + 1}`, paperId: id, page: i + 1, text }); });
-  }
-  ms.addAll(docs);
+  ms.addAll([...papers].map(([id, p]) => indexDoc(id, p)));
   return ms;
 }
 
-// Results grouped by paper, best first; `page` is the best-matching PDF page, if any.
+const indexDoc = (id, p) => ({
+  id, title: p.title, authors: (p.authors || []).join(' '), journal: p.journal, tags: (p.tags || []).join(' '),
+  why: p.why, abstract: decodeEntities(p.abstract),
+});
+
+// Keeps the index in step with a changed or removed paper without rebuilding it.
+export function updateIndex(ms, id, p) {
+  if (ms.has(id)) ms.discard(id);
+  if (p) ms.add(indexDoc(id, p));
+}
+
+// Results best first: { paperId, page, snippet }.
 export function searchPapers(ms, q) {
-  const best = new Map();
-  for (const r of ms.search(q)) {
-    const cur = best.get(r.paperId) || { paperId: r.paperId, score: 0, page: null, pageScore: 0 };
-    cur.score += r.score;
-    if (r.page && r.score > cur.pageScore) { cur.page = r.page; cur.pageScore = r.score; }
-    best.set(r.paperId, cur);
-  }
-  return [...best.values()].sort((a, b) => b.score - a.score);
+  return ms.search(q).map((r) => ({ paperId: r.id, page: null, snippet: null }));
+}
+
+// Metadata hits first, in their order, taking the server's page and snippet when it found the paper too;
+// then papers found only in their PDF text or notes. `server` hits: { paperId, page (0 = notes), snippet }.
+export function mergeHits(local, server, has = () => true) {
+  const byId = new Map(server.map((h) => [h.paperId, h]));
+  const out = local.map((h) => ({ ...h, ...(byId.get(h.paperId) || {}) }));
+  const seen = new Set(out.map((h) => h.paperId));
+  for (const h of server) if (!seen.has(h.paperId) && has(h.paperId)) out.push(h);
+  return out.filter((h) => has(h.paperId));
 }
