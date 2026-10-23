@@ -74,7 +74,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByText('4.0/5 from 1')).toBeVisible();
 
   // Search: PDF text (with a typo), tags and notes.
-  await page.getByRole('link', { name: 'Search', exact: true }).click();
+  await page.getByRole('link', { name: 'Library', exact: true }).click();
   await page.getByLabel('Search the library').fill('sugammadex');
   await expect(page.getByText('p. 1')).toBeVisible();
   await expect(page.locator('.snippet mark')).toHaveText('Sugammadex');
@@ -94,7 +94,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect.poll(() => page.evaluate(() => window.__opened[0]?.location.href || '')).toMatch(/^blob:.*#page=1$/);
 
   // Reading list.
-  await page.getByRole('link', { name: 'Lists', exact: true }).click();
+  await page.getByRole('link', { name: 'Saved', exact: true }).click();
   await page.getByLabel('Name').fill('Research methods');
   await page.getByRole('button', { name: 'Create list' }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
@@ -131,7 +131,7 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
   await expect(page.getByText('Done: 0 added, 2 already there, 0 failed.')).toBeVisible();
 
   // Both are searchable by their PDF text, with no licence wording anywhere.
-  await page.getByRole('link', { name: 'Search', exact: true }).click();
+  await page.getByRole('link', { name: 'Library', exact: true }).click();
   await page.getByLabel('Search the library').fill('ketamine');
   await expect(page.getByRole('link', { name: 'ward round handout' })).toBeVisible();
   await page.getByRole('link', { name: 'ward round handout' }).click();

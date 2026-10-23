@@ -68,7 +68,7 @@ async function loadLibrary() {
   if (typeof window !== 'undefined') window.__jcCatalogue = { mode, fetched, size: papers.size };
   return lib;
 }
-const dirty = () => { if (lib) lib.stale = true; };
+export const dirty = () => { if (lib) lib.stale = true; };
 // A paper removed here, or found missing: drop it now rather than re-reading the catalogue.
 const forget = (id) => { if (lib) { lib.papers.delete(id); if (lib.built) updateIndex(lib.built, id, null); } };
 
@@ -99,8 +99,10 @@ function paperItem(id, p, page, snippet) {
   const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
   const pdf = p.file ? ' <span class="muted">PDF</span>' : '';
   const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
+  const last = (p.presented || []).at(-1);
+  const badge = last ? ` <span class="badge">Presented ${c.esc(last.date.toDate().toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</span>` : '';
   return c.el(`<li class="paper"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>
-    <span class="muted">${c.esc(meta)}${pdf}${hit}</span>${snip}<span>${tags}</span></li>`);
+    <span class="muted">${c.esc(meta)}${pdf}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
 }
 
 async function renderSearch() {
@@ -320,6 +322,7 @@ async function renderPaper(id, hitPage) {
       <label>Your rating <select id="rating"><option value="0">No rating</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}">${n} / 5</option>`).join('')}</select></label>
       <button class="primary">Save note</button></form>
     <ul id="notes" class="list"></ul>
+    <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
     <h2>Reading lists</h2><form id="rl" class="row"><select id="lsel" aria-label="Reading list"></select><button>Add to list</button></form>
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
@@ -369,6 +372,29 @@ async function renderPaper(id, hitPage) {
     apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // notes are searched server-side
     renderPaper(id, hitPage);
   };
+
+  // Journal club: sessions this paper was presented at, with members' take-home points, and a way to plan one.
+  (async () => {
+    const jc = $in(page, '#jc');
+    const ss = await getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id)));
+    const sessions = ss.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.date.toMillis() - a.date.toMillis());
+    const pts = await Promise.all(sessions.map((s) => getDocs(collection(c.db, 'sessions', s.id, 'points'))));
+    jc.replaceChildren();
+    sessions.forEach((s, i) => {
+      const when = s.date.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+      const box = c.el(`<div class="jc-session"><p><a href="#/session/${c.esc(s.id)}">${c.esc(when)}</a> <span class="muted">Presenter: ${c.esc(s.presenterName || '—')}</span></p></div>`);
+      const texts = pts[i].docs.map((d) => d.data().text).filter(Boolean);
+      if (texts.length) { const ul = c.el('<ul class="list"></ul>'); texts.forEach((t) => ul.append(c.el(`<li><span>${c.esc(t)}</span></li>`))); box.append(ul); }
+      jc.append(box);
+    });
+    if (!sessions.length) jc.append(c.el('<p class="muted">Not presented yet.</p>'));
+    jc.append(c.el(`<p><a class="button primary" href="#/plan/${c.esc(id)}">Plan a session</a></p>`));
+    // Older sessions pre-date the `presented` summary on the paper: bring it in step (any member may write it).
+    const want = sessions.map((s) => s.id).sort().join();
+    if ((p.presented || []).map((e) => e.sid).sort().join() !== want) {
+      updateDoc(snap.ref, { presented: sessions.map((s) => ({ sid: s.id, date: s.date })).reverse() }).then(dirty, () => {});
+    }
+  })().catch(() => {});
 
   // Reading lists this member may edit.
   const editable = ls.docs.filter((d) => c.member.role === 'admin' || d.data().createdBy === c.user.uid);

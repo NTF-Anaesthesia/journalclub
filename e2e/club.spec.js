@@ -17,7 +17,7 @@ async function signInAs(browser, email, name, role) {
   return page;
 }
 
-test('members vote once; admin plans a session from the rota; presenter adds summary and slides', async ({ browser }) => {
+test('a member plans a session from a paper page; the paper and the list show it; vote and rota are gone', async ({ browser }) => {
   const admin = await signInAs(browser, 'chief@example.org', 'Chief Admin', 'admin');
   const res = await signInAs(browser, 'res@example.org', 'Ada Resident', 'member');
   for (const [id, title] of [['pa', 'Tranexamic acid in hip fracture'], ['pb', 'Sugammadex and pulmonary complications']]) {
@@ -26,58 +26,53 @@ test('members vote once; admin plans a session from the rota; presenter adds sum
     expect(r.ok()).toBeTruthy();
   }
 
-  // Vote: one vote per paper, shown in the count, and the button flips to undo.
-  await res.goto('/?emulator#/vote');
-  await expect(res.getByRole('heading', { name: 'Vote' })).toBeVisible();
-  await res.getByRole('button', { name: 'Vote for Sugammadex and pulmonary complications' }).click();
-  await expect(res.getByRole('button', { name: 'Remove vote for Sugammadex and pulmonary complications' })).toBeVisible();
-  await expect(res.getByLabel('1 votes')).toBeVisible();
-  // The rules refuse a second vote on the same paper.
-  const again = await res.evaluate(async () => {
-    const { db, doc, setDoc, auth } = window.__jc;
-    try { await setDoc(doc(db, 'papers', 'pb', 'votes', auth.currentUser.uid), { at: new Date() }); return 'saved'; }
-    catch (e) { return e.code; }
-  });
-  expect(again).toBe('permission-denied');
-  // A member can't touch the rota.
+  // Tabs are Library, Club, Saved, Sessions: no Vote.
+  await res.goto('/?emulator#/home');
+  await expect(res.locator('#tabs').getByText('Vote')).toHaveCount(0);
+  await expect(res.locator('#tabs').getByText('Saved')).toBeVisible();
   await res.goto('/?emulator#/rota');
-  await expect(res.getByRole('heading', { name: 'Presenter rota' })).toBeVisible();
-  await expect(res.getByRole('button', { name: 'Rebuild from members' })).toHaveCount(0);
+  await expect(res.getByRole('heading', { name: 'Presenter rota' })).toHaveCount(0);
 
-  // Admin builds the rota (A–Z: Ada sorts first) and plans a session with the most-voted paper preselected.
-  await admin.goto('/?emulator#/rota');
-  await admin.getByRole('button', { name: 'Rebuild from members' }).click();
-  await expect(admin.getByText('→ Ada Resident')).toBeVisible();
-  await admin.goto('/?emulator#/sessions');
-  await expect(admin.getByRole('heading', { name: 'Plan a session' })).toBeVisible();
+  // A member opens a paper and taps Plan a session: the paper is already chosen.
+  await res.goto('/?emulator#/paper/pb');
+  await expect(res.getByText('Not presented yet.')).toBeVisible();
+  await res.getByRole('link', { name: 'Plan a session' }).click();
+  await expect(res.getByLabel('Paper')).toHaveValue('Sugammadex and pulmonary complications');
   const day = new Date(Date.now() + 7 * 86400000);
   const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-  await admin.getByLabel('Date').fill(iso);
-  await expect(admin.getByLabel('Paper')).toHaveValue('pb');
-  await expect(admin.getByLabel('Presenter')).toHaveValue('0');
-  await admin.getByRole('button', { name: 'Create session' }).click();
-  await expect(admin.getByText('Presenter: Ada Resident')).toBeVisible();
-  await expect(admin.getByRole('link', { name: 'Sugammadex and pulmonary complications' })).toBeVisible();
-  // The rota moves on past the booked presenter (other tests' members share the emulator, so don't name who is next).
-  await admin.goto('/?emulator#/rota');
-  await expect(admin.getByText('Ada Resident')).toBeVisible();
-  await expect(admin.getByText('→ Ada Resident')).toHaveCount(0);
+  await res.getByLabel('Date').fill(iso);
+  await res.getByLabel('Coordinator').fill('Dr Consultant');
+  await res.getByRole('button', { name: 'Plan session' }).click();
+  await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
+  await expect(res.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
-  // Home shows the next session; the presenter fills in the session page.
+  // The paper page shows the session; the library list shows the Presented badge.
+  await res.goto('/?emulator#/paper/pb');
+  await expect(res.locator('#jc').getByRole('link').first()).toBeVisible();
+  await expect(res.locator('#jc').getByText('Presenter: Ada Resident')).toBeVisible();
+  await res.goto('/?emulator#/library');
+  const mon = day.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  await expect(res.locator('li.paper', { hasText: 'Sugammadex' }).getByText(`Presented ${mon}`)).toBeVisible();
+  await expect(res.locator('li.paper', { hasText: 'Tranexamic' }).getByText(/Presented/)).toHaveCount(0);
+
+  // Home shows the next session; the creator (a plain member) fills in the session page.
   await res.goto('/?emulator#/home');
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
-  await expect(res.getByText('Sugammadex and pulmonary complications')).toBeVisible();
   await res.locator('#next a').click();
-  await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
   await res.getByLabel('Summary').fill('Reversal choice and PPCs: no difference in the primary outcome.');
   await res.getByLabel('Slides link').fill('https://example.org/slides');
   await res.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(res.locator('#ssum')).toHaveText('Reversal choice and PPCs: no difference in the primary outcome.');
   await expect(res.getByRole('link', { name: 'Open slides' })).toHaveAttribute('href', 'https://example.org/slides');
-  // A presented paper leaves the vote list.
-  await res.goto('/?emulator#/vote');
-  await expect(res.getByRole('button', { name: 'Vote for Tranexamic acid in hip fracture' })).toBeVisible();
-  await expect(res.getByText('Sugammadex and pulmonary complications')).toHaveCount(0);
+
+  // Another member cannot edit the plan; the creator can delete it and the badge goes.
+  const other = await signInAs(browser, 'other@example.org', 'Olu Other', 'member');
+  await other.goto('/?emulator#/session/' + (await res.url().split('/session/')[1]));
+  await expect(other.getByRole('link', { name: /Edit the plan/ })).toHaveCount(0);
+  res.once('dialog', (d) => d.accept());
+  await res.getByRole('button', { name: 'Delete session' }).click();
+  await res.goto('/?emulator#/library');
+  await expect(res.locator('li.paper', { hasText: 'Sugammadex' }).getByText(/Presented/)).toHaveCount(0);
 });
 
 test('admin edits the discussion form; presenter fills it; a member adds a point; the CSV has them', async ({ browser }) => {
