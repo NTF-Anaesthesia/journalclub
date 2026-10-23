@@ -13,6 +13,27 @@ const MONTH = '(?:January|February|March|April|May|June|July|August|September|Oc
 const words = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[a-z0-9]+/g) || [];
 const squash = (s) => String(s || '').replace(/[_\s]+/g, ' ').trim();
 
+// Sentence case: first letter capital, the rest lower case, except acronyms. In a title written in capitals a word is
+// kept as an acronym when it is on the list, holds a digit, or is two letters and not an ordinary short word (IV, CT, GI);
+// in a mixed-case title any word with two or more capitals stays ("ICU", "pH"). Proper names are lowered: fix by hand.
+const ACRONYMS = new Set('ICU ECG EEG EMG CPR ECMO ARDS COPD MRI TIVA TAP CPAP PEEP NIV ICP ASA GCS ENT OSA PONV AKI CKD DVT HIV AIDS MAC SIRS ICD NICE BMI TOF TEG ROTEM ERAS CVC ETT LMA RSI NMDA GABA UK USA WHO'.split(' '));
+const SHORT = new Set('THE AND FOR OF IN ON TO BY AN A OR AT IS AS BE NOT NO ITS ARE WAS ALL OUT OFF PRE POST VS WITH FROM'.split(' '));
+export function sentenceCase(title) {
+  const t = String(title || '');
+  const caps = t === t.toUpperCase();
+  let first = true;
+  return t.replace(/[A-Za-z\u00c0-\u00ff0-9']+/g, (w) => {
+    const upper = w === w.toUpperCase() && /[A-Z]/.test(w);
+    const keep = caps
+      ? ACRONYMS.has(w) || /\d/.test(w) || (w.length === 2 && !SHORT.has(w))
+      : (w.match(/[A-Z\u00c0-\u00de]/g) || []).length >= 2 || /^[a-z]+[A-Z]/.test(w) || (upper && w.length > 1) || /\d/.test(w);
+    const out = keep ? w : w.toLowerCase();
+    const r = first ? out[0].toUpperCase() + out.slice(1) : out;
+    first = false;
+    return r;
+  });
+}
+
 // The title without its "ATOTW <n>" start, underscores as spaces; '' when nothing is left.
 export const strippedTitle = (title) => squash(String(title || '').replace(PREFIX, ''));
 
@@ -43,7 +64,7 @@ export function tidyPlan(p, page1 = '') {
   const next = {};
   if (!manual.has('title')) {
     let title = pageSpan(plain, page1) || plain;
-    if (title && title === title.toLowerCase()) title = title[0].toUpperCase() + title.slice(1); // a file name in lower case: capital first letter
+    title = sentenceCase(title);
     if (title && title !== oldTitle) next.title = title.slice(0, 500);
     else if (!title && !p.atotw) return { n, next: {}, status: 'unsure', note: 'No title left after the number' };
   }
