@@ -53,7 +53,7 @@ async function loadMember() {
 function route() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [name, arg, arg2] = hash.split('/');
-  return { name: name || 'home', arg, arg2 };
+  return { name: name || 'library', arg, arg2 };
 }
 
 function render() {
@@ -68,18 +68,18 @@ function render() {
   const ctx = { db, user, member, view, el, esc };
   if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, ctx);
   if (CLUB_ROUTES.includes(r.name)) return renderClubRoute(r, ctx);
-  return renderClubRoute({ name: 'home' }, ctx);
+  return renderLibraryRoute({ name: 'library' }, ctx);
 }
 
-// Bottom tab bar (members only) and the top bar: its title fades in once the page's large title scrolls away.
+// Bottom tab bar (members only; search is the default page, club home is #/home) and the top bar: its title fades in once the page's large title scrolls away.
 const TABS = [
-  ['', 'Home', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
-  ['library', 'Library', '<path d="M4 5c3-1 6-1 8 1v14c-2-2-5-2-8-1zM20 5c-3-1-6-1-8 1v14c2-2 5-2 8-1z"/>'],
+  ['', 'Search', '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'],
+  ['home', 'Club', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
   ['lists', 'Lists', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
   ['vote', 'Vote', '<path d="M7 11V20H4v-9zM7 11l4-7c1.5 0 2.5 1 2.2 2.6L12.6 10H18a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'],
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
-const TAB_OF = { '': '', home: '', library: 'library', add: 'library', paper: 'library', lists: 'lists', list: 'lists',
+const TAB_OF = { '': '', library: '', add: '', paper: '', home: 'home', lists: 'lists', list: 'lists',
   vote: 'vote', sessions: 'sessions', session: 'sessions', rota: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 

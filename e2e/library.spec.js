@@ -59,7 +59,7 @@ const noSideScroll = (page) => page.evaluate(() => document.documentElement.scro
 test('add by DOI, upload own PDF, search notes and PDF text, open at the page, reading list', async ({ page }) => {
   const files = await fakeApi(page);
   await signInAsMember(page, 'res1@example.org');
-  await page.goto('/?emulator#/library');
+  await page.goto('/?emulator#/');
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
 
@@ -97,7 +97,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByText('4.0/5 from 1')).toBeVisible();
 
   // Search: PDF text (with a typo), tags and notes.
-  await page.getByRole('link', { name: 'Library', exact: true }).click();
+  await page.getByRole('link', { name: 'Search', exact: true }).click();
   await page.getByLabel('Search the library').fill('sugamadex');
   await expect(page.getByText('p. 1')).toBeVisible();
   await page.getByLabel('Search the library').fill('bayesian');

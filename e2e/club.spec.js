@@ -64,7 +64,7 @@ test('members vote once; admin plans a session from the rota; presenter adds sum
   await expect(admin.getByText('→ Ada Resident')).toHaveCount(0);
 
   // Home shows the next session; the presenter fills in the session page.
-  await res.goto('/?emulator#/');
+  await res.goto('/?emulator#/home');
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
   await expect(res.getByText('Sugammadex and pulmonary complications')).toBeVisible();
   await res.locator('#next a').click();
