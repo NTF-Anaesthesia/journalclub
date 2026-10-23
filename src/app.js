@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
+import { refresh as refreshOffline, clearAll as clearOffline, usage as offlineUsage, sizeText } from './offline.js';
 import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
@@ -44,19 +45,26 @@ let user = null;       // Firebase user or null
 let member = null;     // members/{uid} data or null
 let ready = false;
 
+// The member row is kept on this device so the app opens offline; a read that says "no such member" always wins.
+const memberKey = (uid) => `jc.member.${uid}`;
 async function loadMember() {
   member = null;
   if (!user) return;
   try {
     const snap = await getDoc(doc(db, 'members', user.uid));
     member = snap.exists() ? snap.data() : null;
-  } catch (e) { console.error('loadMember', e.code, e.message); member = null; }
+    if (!member) clearOffline().catch(() => {}); // removed members lose their offline papers
+    try { if (member) localStorage.setItem(memberKey(user.uid), JSON.stringify({ role: member.role, name: member.name || '', email: member.email || '' })); else localStorage.removeItem(memberKey(user.uid)); } catch { /* ignore */ }
+  } catch (e) {
+    console.error('loadMember', e.code, e.message);
+    try { member = e.code === 'unavailable' || navigator.onLine === false ? JSON.parse(localStorage.getItem(memberKey(user.uid)) || 'null') : null; } catch { member = null; }
+  }
 }
 
 function route() {
-  const hash = location.hash.replace(/^#\/?/, '');
-  const [name, arg, arg2] = hash.split('/');
-  return { name: name || 'library', arg, arg2 };
+  const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
+  const [name, arg, arg2] = path.split('/');
+  return { name: name || 'library', arg, arg2, q: new URLSearchParams(qs || '').get('q') || '' };
 }
 
 function render() {
@@ -80,7 +88,7 @@ const TABS = [
   ['lists', 'Saved', '<path d="M6 4h12v16l-6-4-6 4z"/>'],
   ['home', 'Club', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c.8-3.6 3.2-5.5 6-5.5s5.2 1.9 6 5.5"/><circle cx="16.5" cy="9" r="2.6"/><path d="M16 14.6c2.6 0 4.4 1.7 5 5.4"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', reindex: '', duplicates: '', lists: 'lists', list: 'lists',
+const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', read: '', remove: '', reindex: '', duplicates: '', lists: 'lists', list: 'lists',
   home: 'home', sessions: 'home', session: 'home', point: 'home', plan: 'home' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
@@ -112,14 +120,20 @@ let lastH1 = null;
 new MutationObserver(() => { const h = view.querySelector('h1'); if (h !== lastH1) { lastH1 = h; watchTitle(); } })
   .observe(view, { childList: true, subtree: true });
 
-function renderMe() {
+async function renderMe() {
   const admin = member?.role === 'admin';
   const page = el(`<section class="card"><h1>Account</h1>
     <ul class="list"><li><span>${esc(member?.name || user.displayName || '')}<br><span class="muted">${esc(user.email)}</span></span>
       ${member ? `<span class="muted">${esc(member.role)}</span>` : ''}</li></ul>
     ${admin ? '<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/admin">Admin</a></li></ul>' : ''}
+    <h2>Offline papers</h2><p class="muted" id="offinfo">Counting…</p>
+    <p><button id="offclear" type="button">Clear offline papers</button></p>
     <p><button id="out" class="danger-btn">Sign out</button></p></section>`);
-  page.querySelector('#out').onclick = () => signOut(auth);
+  page.querySelector('#out').onclick = async () => { await clearOffline().catch(() => {}); signOut(auth); };
+  const info = page.querySelector('#offinfo');
+  const showUsage = async () => { const u = await offlineUsage(); info.textContent = u.count ? `${u.count} ${u.count === 1 ? 'paper' : 'papers'} saved on this device, ${sizeText(u.bytes)}. Starred papers and the last 20 you opened are kept.` : 'No papers saved on this device yet. Starred papers and the last 20 you opened are kept.'; };
+  page.querySelector('#offclear').onclick = async () => { await clearOffline(); showUsage(); };
+  showUsage();
   view.replaceChildren(page);
 }
 
@@ -302,9 +316,24 @@ async function renderAdmin() {
   refresh();
 }
 
+// Offline shell: the Service Worker keeps the app itself; src/offline.js keeps the PDFs.
+function startServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').then(async () => {
+    const sw = (await navigator.serviceWorker.ready).active;
+    // The reader and PDF.js load on demand: fetch them now so they are cached before the first flight.
+    await Promise.allSettled([import('./reader.js'), fetch('/pdf.worker.min.mjs')]);
+    sw?.postMessage({ type: 'precache', urls: performance.getEntriesByType('resource').map((e) => e.name).filter((n) => !n.includes('/api/')) });
+  }).catch(() => {});
+}
+
 onAuthStateChanged(auth, async (u) => {
+  const was = user;
   user = u;
+  if (!u && was) await clearOffline().catch(() => {}); // signed out, in this tab or another
   await loadMember();
+  await refreshOffline().catch(() => {});
+  if (u && member) startServiceWorker();
   ready = true;
   render();
 });

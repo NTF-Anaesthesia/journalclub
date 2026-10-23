@@ -85,13 +85,11 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByLabel('Search the library').fill('rocuronium');
   expect(await noSideScroll(page)).toBe(true);
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
-  // Record where the new tab is sent (headless browsers treat a PDF tab as a download, so its URL isn't observable).
-  await page.evaluate(() => {
-    window.__opened = [];
-    window.open = () => { const w = { location: {}, close() {} }; window.__opened.push(w); return w; };
-  });
-  await page.getByRole('button', { name: 'Open PDF at page 1' }).click();
-  await expect.poll(() => page.evaluate(() => window.__opened[0]?.location.href || '')).toMatch(/^blob:.*#page=1$/);
+  // A PDF hit lands in the in-app reader at the page, not in a new tab.
+  await expect(page).toHaveURL(/#\/read\/.*\/1\?q=rocuronium$/);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await page.getByRole('link', { name: 'Back to paper' }).click();
+  await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
 
   // Reading list.
   await page.getByRole('link', { name: 'Saved', exact: true }).click();
@@ -99,6 +97,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByRole('button', { name: 'Create list' }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
   await page.goto(`/?emulator=${PROJECT}#/library`);
+  await page.getByLabel('Search the library').fill(''); // same page as before: the search box still holds the last search
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
   await page.getByRole('button', { name: 'Lists and tags…' }).click();
   const sheet = page.getByRole('dialog', { name: 'Add 1 paper to' });
@@ -141,7 +140,8 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
   await page.getByLabel('Search the library').fill('ketamine');
   await expect(page.getByRole('link', { name: 'ward round handout' })).toBeVisible();
   await page.getByRole('link', { name: 'ward round handout' }).click();
-  await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
+  await expect(page).toHaveURL(/#\/read\/.*\/1\?q=ketamine$/); // a PDF hit opens the reader
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
   await expect(page.getByText(/Creative Commons|licence/i)).toHaveCount(0);
 });
 
