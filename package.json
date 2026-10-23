@@ -7,6 +7,7 @@
     "test:rules": "firebase emulators:exec --only firestore --project demo-jc \"node --test rules-test/rules.test.js\"",
     "test:e2e": "npm run build && firebase emulators:exec --only firestore,auth --project demo-jc \"playwright test\"",
     "test": "npm run test:unit && npm run build && firebase emulators:exec --only firestore,auth --project demo-jc \"playwright test && node --test rules-test/rules.test.js\"",
+    "test:unit-rules": "npm run test:unit && npm run test:rules",
     "test:unit": "node --test test/*.test.js"
   },
   "devDependencies": {
