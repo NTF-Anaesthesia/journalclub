@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, PROJECT, DOCS } from './emu.js';
 import { workerApi } from './worker-api.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
@@ -23,10 +23,10 @@ function makePdf(text) {
 }
 
 async function signInAsMember(page, email) {
-  await page.goto('/?emulator');
+  await page.goto(`/?emulator=${PROJECT}`);
   const uid = await page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
   const seed = await page.request.patch(
-    `http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents/members/${uid}`,
+    `${DOCS}/members/${uid}`,
     { headers: { Authorization: 'Bearer owner' }, data: { fields: {
       email: { stringValue: email }, name: { stringValue: 'Res One' }, role: { stringValue: 'member' }, inviteId: { stringValue: 'seed' } } } });
   expect(seed.ok()).toBeTruthy();
@@ -36,9 +36,9 @@ async function signInAsMember(page, email) {
 const noSideScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
 test('add by DOI, upload own PDF, search notes and PDF text, open at the page, reading list', async ({ page }) => {
-  const { files } = await workerApi(page);
+  const { files } = await workerApi(page, PROJECT);
   await signInAsMember(page, 'res1@example.org');
-  await page.goto('/?emulator#/');
+  await page.goto(`/?emulator=${PROJECT}#/`);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
 
@@ -55,7 +55,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByRole('link', { name: 'Via NUS Libraries' })).toHaveAttribute('href', /libproxy1\.nus\.edu\.sg.*10\.1371/);
 
   // The same DOI again is caught.
-  await page.goto('/?emulator#/add');
+  await page.goto(`/?emulator=${PROJECT}#/add`);
   await page.getByLabel('DOI or PubMed ID').fill('10.1371/journal.pmed.0020124');
   await page.getByRole('button', { name: 'Look up' }).click();
   await expect(page.getByText('Already in the library:')).toBeVisible();
@@ -98,7 +98,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByLabel('Name').fill('Research methods');
   await page.getByRole('button', { name: 'Create list' }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
-  await page.goto('/?emulator#/library');
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
   await page.getByRole('button', { name: 'Lists and tags…' }).click();
   const sheet = page.getByRole('dialog', { name: 'Add 1 paper to' });
@@ -113,9 +113,9 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
 });
 
 test('bulk import reads DOIs from the PDFs, names the rest from the file, skips repeats', async ({ page }) => {
-  const { files } = await workerApi(page);
+  const { files } = await workerApi(page, PROJECT);
   await signInAsMember(page, 'res2@example.org');
-  await page.goto('/?emulator#/');
+  await page.goto(`/?emulator=${PROJECT}#/`);
   await page.reload();
   await page.getByRole('link', { name: 'Import PDFs' }).click();
   const pdfs = [
@@ -146,9 +146,9 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
 });
 
 test('ATOTW PDFs with no printed DOI are found by the number in the file name or on the page', async ({ page }) => {
-  await workerApi(page);
+  await workerApi(page, PROJECT);
   await signInAsMember(page, 'res3@example.org');
-  await page.goto('/?emulator#/');
+  await page.goto(`/?emulator=${PROJECT}#/`);
   await page.reload();
   await page.getByRole('link', { name: 'Import PDFs' }).click();
   await page.getByLabel('PDF files').setInputFiles([
@@ -168,12 +168,12 @@ test('paper page decodes stored entities in the title and abstract, and bolds se
   // Stored the old way: hex entities left raw, labels as plain "LABEL: " text.
   const abstract = 'BACKGROUND: Low SpO&#x2082;&#xa0;is common.\nMETHODS: Adults with BMI &#x2264; 35. RESULTS: It fell.';
   const seed = await page.request.patch(
-    'http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents/papers/abs1',
+    `${DOCS}/papers/abs1`,
     { headers: { Authorization: 'Bearer owner' }, data: { fields: {
       title: { stringValue: 'CO&#x2082; in recovery' }, doi: { stringValue: '' }, pmid: { stringValue: '' },
       abstract: { stringValue: abstract }, addedBy: { stringValue: uid } } } });
   expect(seed.ok()).toBeTruthy();
-  await page.goto('/?emulator#/paper/abs1');
+  await page.goto(`/?emulator=${PROJECT}#/paper/abs1`);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'CO₂ in recovery' })).toBeVisible();
   await page.getByText('Abstract', { exact: true }).click();
@@ -186,9 +186,9 @@ test('paper page decodes stored entities in the title and abstract, and bolds se
 });
 
 test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named paper, and leaves tags alone', async ({ page }) => {
-  await workerApi(page);
+  await workerApi(page, PROJECT);
   const uid = await signInAsMember(page, 'res4@example.org');
-  const api = 'http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents';
+  const api = DOCS;
   const headers = { Authorization: 'Bearer owner' };
   const s = (v) => ({ stringValue: v });
   expect((await page.request.patch(`${api}/members/${uid}`, { headers, data: { fields: {
@@ -198,7 +198,7 @@ test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named pa
   expect((await seed('old1', { title: s('Alogliptin'), doi: s('10.1056/NEJMoa1305889'), abstract: s('Platelets 109/L') })).ok()).toBeTruthy();
   expect((await seed('atotw1', { title: s('ATOTW 551 SGLT2'), doi: s('') })).ok()).toBeTruthy();
   expect((await seed('none1', { title: s('ward round handout'), doi: s('') })).ok()).toBeTruthy();
-  await page.goto('/?emulator#/library');
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   // Refresh lives in select mode: tick the three papers; the button counts only those with an ID.
   await page.getByRole('button', { name: 'Select', exact: true }).click();
@@ -216,7 +216,7 @@ test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named pa
   await page.locator('a[href="#/paper/old1"]').click();
   await expect(page.locator('.tag', { hasText: /^keep$/ }).first()).toBeVisible();
   // A second run finds nothing to change.
-  await page.goto('/?emulator#/library');
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await expect(page.locator('#count')).toContainText('papers · Newest first');
   await page.getByRole('button', { name: 'Select', exact: true }).click();

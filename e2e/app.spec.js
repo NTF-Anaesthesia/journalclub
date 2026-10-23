@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, PROJECT, DOCS } from './emu.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -17,18 +17,18 @@ test('stranger opening an invite link is asked to sign in first', async ({ page 
 });
 
 test('admin invites, a newcomer joins once, the link then dies', async ({ page, browser }) => {
-  await page.goto('/?emulator');
+  await page.goto(`/?emulator=${PROJECT}`);
   const uid = await page.evaluate(async () => {
     await window.__jc.signIn('boss@example.org');
     return window.__jc.auth.currentUser.uid;
   });
   // Seed the first admin the way the real project is seeded: out of band, bypassing rules (emulator owner token).
   const seed = await page.request.patch(
-    `http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents/members/${uid}`,
+    `${DOCS}/members/${uid}`,
     { headers: { Authorization: 'Bearer owner' }, data: { fields: {
       email: { stringValue: 'boss@example.org' }, name: { stringValue: 'Boss' }, role: { stringValue: 'admin' }, inviteId: { stringValue: 'seed' } } } });
   expect(seed.ok()).toBeTruthy();
-  await page.goto('/?emulator#/admin');
+  await page.goto(`/?emulator=${PROJECT}#/admin`);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
   await page.getByPlaceholder('Note (who it is for)').fill('new resident');
@@ -39,9 +39,9 @@ test('admin invites, a newcomer joins once, the link then dies', async ({ page, 
 
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const p2 = await ctx.newPage();
-  await p2.goto('/?emulator');
+  await p2.goto(`/?emulator=${PROJECT}`);
   await p2.evaluate(() => window.__jc.signIn('new@example.org'));
-  await p2.goto(`/?emulator#/join/${token}`);
+  await p2.goto(`/?emulator=${PROJECT}#/join/${token}`);
   await p2.reload();
   await expect(p2.getByText('Join as new@example.org?')).toBeVisible();
   await p2.getByRole('button', { name: 'Accept invite' }).click();
@@ -50,9 +50,9 @@ test('admin invites, a newcomer joins once, the link then dies', async ({ page, 
 
   const ctx3 = await browser.newContext();
   const p3 = await ctx3.newPage();
-  await p3.goto('/?emulator');
+  await p3.goto(`/?emulator=${PROJECT}`);
   await p3.evaluate(() => window.__jc.signIn('third@example.org'));
-  await p3.goto(`/?emulator#/join/${token}`);
+  await p3.goto(`/?emulator=${PROJECT}#/join/${token}`);
   await p3.reload();
   await expect(p3.getByText(/not valid any more/)).toBeVisible();
 });

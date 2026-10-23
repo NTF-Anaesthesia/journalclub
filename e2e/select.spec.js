@@ -1,11 +1,8 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, PROJECT, DOCS, BASE } from './emu.js';
 import { workerApi } from './worker-api.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-// Its own emulator project, so other specs' papers don't change the filter counts.
-const PROJECT = 'demo-select';
-const DOCS = `http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
 const owner = { Authorization: 'Bearer owner' };
 const s = (v) => ({ stringValue: v });
 const arr = (xs) => ({ arrayValue: { values: xs.map(s) } });
@@ -51,11 +48,6 @@ async function longPress(page, locator) {
   await page.waitForTimeout(700);
   await page.mouse.up();
 }
-
-test.describe.configure({ mode: 'serial' });
-test.beforeAll(async ({ request }) => {
-  expect((await request.delete(`http://127.0.0.1:8080/emulator/v1/projects/${PROJECT}/databases/(default)/documents`)).ok()).toBeTruthy();
-});
 
 test('admin: filter No abstract, long-press, All, Refresh touches only those; PDF not indexed + Reindex', async ({ page }) => {
   test.setTimeout(60000);
