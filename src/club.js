@@ -55,12 +55,19 @@ export function renderClubRoute(r, ctx) {
   return renderHome();
 }
 
-// Club tab (#/home and #/sessions): today's or the next session first, then Plan a session, Upcoming and Past.
+// Club tab (#/home and #/sessions): today's or the next session first (when, your role, your actions), then Plan a session,
+// Upcoming and the latest Past sessions (the rest behind Show all).
+const PAST_SHOWN = 5;
+const daysAway = (s) => Math.round((s.date.toMillis() - startOfToday().toMillis()) / 86400000);
+const whenText = (s) => { const n = daysAway(s); return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : n < 7 ? `In ${n} days` : ''; };
+const myRole = (s) => (s.presenterUid === c.user.uid ? 'You present' : s.coordinatorUid === c.user.uid ? 'You coordinate' : '');
+const roleBadge = (s) => (myRole(s) ? ` <span class="badge">${myRole(s)}</span>` : '');
+
 async function renderHome() {
   const page = c.el(`<section class="card"><h1>Club</h1>
     <h2>Next session</h2><div id="next"><p class="muted">Loading…</p></div>
     <p class="actions"><a class="button primary" href="#/plan">Plan a session</a></p>
-    <h2>Upcoming</h2><ul id="up" class="list"></ul><h2>Past</h2><ul id="past" class="list"></ul></section>`);
+    <h2>Upcoming</h2><ul id="up" class="list"></ul><h2>Past</h2><ul id="past" class="list"></ul><p id="pastmore"></p></section>`);
   c.view.replaceChildren(page);
   const [ss, club] = await Promise.all([getDocs(query(collection(c.db, 'sessions'), orderBy('date'))), loadClub()]);
   if (!page.isConnected) return;
@@ -70,18 +77,33 @@ async function renderHome() {
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
-      <a href="#/session/${d.id}" class="plain">${c.esc(decodeEntities(s.paperTitle))}</a><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
+      <a href="#/session/${d.id}" class="plain">${c.esc(decodeEntities(s.paperTitle))}</a><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}${roleBadge(s)}</span></li>`);
     if (s.date.toMillis() >= today) { if (!next) next = { id: d.id, ...s }; else up.append(li); } else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
   if (!past.children.length) past.append(c.el('<li class="muted">None yet.</li>'));
+  const older = [...past.children].slice(PAST_SHOWN);
+  if (older.length) {
+    older.forEach((li) => { li.hidden = true; });
+    const more = c.el(`<button type="button" class="link">Show all ${past.children.length} past sessions</button>`);
+    more.onclick = () => { older.forEach((li) => { li.hidden = false; }); more.remove(); };
+    $in(page, '#pastmore').append(more);
+  }
   const box = $in(page, '#next');
-  if (!next) box.replaceChildren(c.el('<p class="muted">No session planned yet.</p>'));
-  else {
+  if (!next) {
+    box.replaceChildren(c.el('<p class="muted">No session planned yet. Plan one below, or open a paper in the Library and tap Plan a session.</p>'));
+  } else {
+    const mine = await getDoc(doc(c.db, 'sessions', next.id, 'points', c.user.uid)).catch(() => null);
+    if (!page.isConnected) return;
     const hasSlides = next.slidesFile?.kind || safeUrl(next.slides);
-    box.replaceChildren(c.el(`<p class="next"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
+    const when = [whenText(next), startTimeText(next, club), next.venue || next.location].filter(Boolean).join(' · ');
+    const edit = mayPlanSession(next)
+      ? `<a href="#/plan/-/${next.id}">${myRole(next) === 'You present' && !hasSlides ? 'Add slides' : 'Edit session'}</a>` : '';
+    box.replaceChildren(c.el(`<p class="next"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a>${roleBadge(next)}<br>
+        <span class="when">${c.esc(when)}</span><br>
         <a href="#/session/${next.id}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
-      c.el(`<p class="actions">${hasSlides ? `<a href="#/session/${next.id}">Slides</a>` : ''}<a href="#/point/${next.id}">Add take-home point</a></p>`));
+      c.el(`<p class="actions">${next.locked ? '' : `<a href="#/point/${next.id}">${mine?.exists() ? 'Edit your take-home point' : 'Add take-home point'}</a>`}
+        ${hasSlides ? `<a href="#/session/${next.id}">Slides</a>` : ''}${edit}</p>`));
     const url = safeUrl(next.teamsUrl || club.teamsUrl);
     if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
       box.prepend(c.el(`<p><a class="button primary" id="join" href="${c.esc(url)}" target="_blank" rel="noopener">Join on Teams</a></p>`));
@@ -369,7 +391,8 @@ async function renderSession(sid) {
   if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
   const s = { id: sid, ...snap.data() };
   const [club, template, pts] = await Promise.all([loadClub(), loadTemplate(), getDocs(collection(c.db, 'sessions', sid, 'points'))]);
-  const points = pts.docs.map((d) => d.data());
+  const points = pts.docs.map((d) => ({ ...d.data(), mine: d.id === c.user.uid }));
+  const myPoint = points.some((p) => p.mine);
   const fields = sessionFields(s, template);
   const slides = safeUrl(s.slides);
   const sf = s.slidesFile?.kind ? s.slidesFile : null;
@@ -387,7 +410,8 @@ async function renderSession(sid) {
     <div class="session-head"><h1>${c.esc(fmtDate(s.date))}</h1>
     <p class="muted">${c.esc(startTimeText(s, club))}${venue ? ` · ${c.esc(venue)}` : ''}</p>
     <p>Presenter: ${c.esc(s.presenterName || '—')}${s.coordinatorName ? `<br>Coordinator: ${c.esc(s.coordinatorName)}` : ''}</p>
-    ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}</div>
+    ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
+    <p class="actions no-print" id="sacts"></p></div>
     <div class="paper-card" id="spaper"><p class="eyebrow">PAPER</p><p><strong>${c.esc(decodeEntities(s.paperTitle))}</strong></p>
       ${pmeta ? `<p class="muted">${c.esc(pmeta)}</p>` : ''}${short ? `<p>${c.esc(short)}</p>` : ''}
       ${s.paperId ? `<p><a class="button" id="openpaper" href="#/paper/${c.esc(s.paperId)}">Open paper</a></p>` : ''}</div>
@@ -403,13 +427,19 @@ async function renderSession(sid) {
   const disc = discussionView(c, fields, s.discussion?.answers);
   if (disc.children.length) { $in(page, '#sdisc').append(c.el('<h2>Discussion</h2>'), disc); }
   const ul = $in(page, '#spts');
-  points.forEach((p) => ul.append(c.el(`<li><span>${c.esc(p.text)} <span class="muted">${c.esc(p.name || '')}</span></span></li>`)));
+  points.forEach((p) => ul.append(c.el(`<li><span>${c.esc(p.text)} <span class="muted">${c.esc(p.name || '')}${p.mine ? ' (you)' : ''}</span></span></li>`)));
   if (!points.length) ul.append(c.el('<li class="muted">None yet.</li>'));
+  // Join on Teams (in its window) and your point sit under the session's details, not at the foot of the page.
+  const acts = $in(page, '#sacts');
+  const url = safeUrl(s.teamsUrl || club.teamsUrl);
+  if (url && inJoinWindow(startMillis(s, club.time), Date.now())) {
+    acts.append(c.el(`<a class="button primary" id="join" href="${c.esc(url)}" target="_blank" rel="noopener">Join on Teams</a>`));
+  }
   if (!s.locked) {
-    const link = sessionUrl(sid);
+    acts.append(c.el(`<a class="button" id="plink" href="#/point/${c.esc(sid)}">${myPoint ? 'Edit your point' : 'Add your point'}</a>`));
     $in(page, '#sqr').append(c.el(`<div class="no-print"><h3>${c.esc(club.pointPrompt)}</h3>
-      <div class="qr" style="max-width:180px" aria-label="QR code">${qrSvg(link)}</div>
-      <p><a id="plink" href="#/point/${c.esc(sid)}">Add your point</a></p></div>`));
+      <p class="muted">Scan to add a point from your phone.</p>
+      <div class="qr" style="max-width:180px" aria-label="QR code">${qrSvg(sessionUrl(sid))}</div></div>`));
   }
   $in(page, '#scopy').onclick = async (e) => {
     try { await navigator.clipboard.writeText(sessionMarkdown(s, template, points)); e.target.textContent = 'Copied'; }
@@ -513,7 +543,7 @@ async function renderPoint(sid) {
     <p class="muted">${c.esc(decodeEntities(s.paperTitle))}</p>
     ${s.locked ? '<p class="muted">This session is locked.</p>' : `<form class="stack"><label>${c.esc(club.pointPrompt)}
       <textarea id="ptext" rows="4" maxlength="500" required></textarea></label>
-      <button class="primary">Save</button><p class="muted" id="pmsg"></p></form>`}</section>`);
+      <button class="primary">${mine.exists() ? 'Update' : 'Save'}</button><p class="muted" id="pmsg" role="status"></p></form>`}</section>`);
   c.view.replaceChildren(page);
   const form = $in(page, 'form');
   if (!form) return;
@@ -522,7 +552,9 @@ async function renderPoint(sid) {
     e.preventDefault();
     try {
       await setDoc(ref, { text: $in(form, '#ptext').value.trim(), name: c.member.name || c.user.email, updatedAt: serverTimestamp() });
-      $in(form, '#pmsg').textContent = 'Saved. You can edit it here until the session is locked.';
+      $in(form, '#pmsg').replaceChildren('Saved. You can edit it here until the session is locked. ',
+        c.el(`<a href="#/session/${c.esc(sid)}">Back to the session</a>`));
+      $in(form, 'button').textContent = 'Update';
     } catch { $in(form, '#pmsg').textContent = 'Could not save.'; }
   };
 }

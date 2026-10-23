@@ -30,11 +30,11 @@ test('a member plans a session from a paper page; the paper and the list show it
   // Papers first, then the member opens the app: its catalogue is read once per page load.
   const res = await signInAs(browser, 'res@example.org', 'Ada Resident', 'member');
 
-  // Tabs are Library, Saved, Club: no Vote, no Sessions.
+  // Tabs are Club, Library, Saved: no Vote, no Sessions.
   await res.goto(`/?emulator=${PROJECT}#/home`);
   await expect(res.locator('#tabs').getByText('Vote')).toHaveCount(0);
   await expect(res.locator('#tabs').getByText('Saved')).toBeVisible();
-  await expect(res.locator('#tabs .app-tab')).toHaveText(['Library', 'Saved', 'Club']);
+  await expect(res.locator('#tabs .app-tab')).toHaveText(['Club', 'Library', 'Saved']);
   await res.goto(`/?emulator=${PROJECT}#/rota`);
   await expect(res.getByRole('heading', { name: 'Presenter rota' })).toHaveCount(0);
 
@@ -72,6 +72,9 @@ test('a member plans a session from a paper page; the paper and the list show it
   await res.goto(`/?emulator=${PROJECT}#/home`);
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
   await expect(res.getByRole('link', { name: 'Add take-home point' })).toBeVisible();
+  // The presenter sees their role and, with no slides yet, Add slides (to the Edit page).
+  await expect(res.locator('#next')).toContainText('You present');
+  await expect(res.locator('#next').getByRole('link', { name: 'Add slides' })).toHaveAttribute('href', /#\/plan\/-\//);
   await res.locator('#nexts').click();
   const sid = res.url().split('/session/')[1];
   await expect(res.getByLabel('Summary')).toHaveCount(0);
@@ -183,6 +186,8 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   await expect(mem.locator('#pmsg')).toContainText('Saved');
   await mem.goto(`/?emulator=${PROJECT}#/session/disc1`);
   await expect(mem.getByText('Watch the heart rate')).toBeVisible();
+  await expect(mem.getByRole('link', { name: 'Edit your point' })).toBeVisible();
+  await expect(mem.locator('#spts')).toContainText('(you)');
   // Members can't edit the discussion or set the coordinator.
   await expect(mem.locator('#saveall')).toHaveCount(0);
   await expect(mem.getByLabel('Coordinator')).toHaveCount(0);
