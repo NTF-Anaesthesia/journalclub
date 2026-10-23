@@ -1,77 +1,48 @@
-// Library pages: search, add by DOI or PubMed ID, bulk PDF import, paper page (notes, ratings, PDF), reading lists.
+// Library pages: search and browse (sort, filter chips, select mode), add by DOI or PubMed ID, bulk PDF import,
+// paper page (notes, ratings, PDF, star, lists). Saved and list pages: src/saved.js; bulk actions: src/bulk.js.
 import {
-  doc, getDoc, getDocs, getDocsFromCache, getCountFromServer, collection, setDoc, addDoc, deleteDoc, updateDoc,
-  query, where, orderBy, limit, serverTimestamp, arrayUnion, arrayRemove, Timestamp,
+  doc, getDoc, getDocs, collection, collectionGroup, setDoc, addDoc, deleteDoc, updateDoc,
+  query, where, orderBy, limit, serverTimestamp,
 } from 'firebase/firestore';
-import { buildIndex, updateIndex, searchPapers, mergeHits } from './search.js';
+import { searchPapers, mergeHits } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
-import { mountRefresh } from './refresh.js';
+import { refreshId } from './refresh.js';
+import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing } from './catalogue.js';
+import { SORTS, sortLabel, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
+import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
+import { sheet, snack, addToSheet, starSelected, refreshSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
+import { renderSaved, renderList } from './saved.js';
 
-export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex'];
+export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex', 'duplicates'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
-let lib = null;     // { papers, index, stale }: the catalogue (paper metadata only) and its search index
-let lastQuery = '';
-let shown = 0;      // papers shown in the newest-first list, 50 more per "Show more"
 const PAGE = 50;
-const SYNC_KEY = 'jc.catalogueSync';
+// The list's state, kept while moving between pages: search, filters, sort, rows shown, and a selection to restore.
+const ui = { q: '', filter: emptyFilter(), sort: 'newest', shown: PAGE, pendingSel: null };
+const AUTHORS_KEY = 'jc.showAuthors';
+const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) === '1'; } catch { return false; } };
 
 const $in = (root, sel) => root.querySelector(sel);
 const mayEdit = (p) => c.member.role === 'admin' || p.addedBy === c.user.uid;
 const authorLine = (a = []) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} et al.` : a.join(', '));
 const tagList = (s) => [...new Set(String(s).split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+const loadLibrary = () => loadCatalogue(c.db);
+const dirty = markDirty;
+export { dirty };
+const STAR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>';
+const ICON = {
+  add: '<path d="M4 12l8-8h6v6l-8 8z"/><circle cx="15" cy="9" r="1.2"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
+  star: '<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+};
 
 async function apiFetch(path, init = {}) {
   const token = await c.user.getIdToken();
   return fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
 }
-
-// The catalogue lives in Firestore's persistent cache. A repeat open reads the cache, then only the papers
-// whose changedAt is newer than the newest one seen, plus one count; a count that doesn't match (a paper
-// removed elsewhere) falls back to a full read. Stats for tests: window.__jcCatalogue.
-const readSync = () => { try { const v = JSON.parse(localStorage.getItem(SYNC_KEY)); return v && new Timestamp(v.s, v.n); } catch { return null; } };
-const writeSync = (t) => { try { localStorage.setItem(SYNC_KEY, JSON.stringify({ s: t.seconds, n: t.nanoseconds })); } catch { /* private mode */ } };
-const newest = (papers, since) => {
-  let t = since;
-  for (const p of papers.values()) if (p.changedAt?.toMillis && (!t || p.changedAt > t)) t = p.changedAt;
-  return t;
-};
-
-async function loadLibrary() {
-  if (lib && !lib.stale) return lib;
-  const col = collection(c.db, 'papers');
-  let since = readSync();
-  let papers = lib?.papers || null, fetched = 0, mode = 'delta';
-  if (!papers && since) {
-    try {
-      const cached = await getDocsFromCache(col);
-      if (!cached.empty) papers = new Map(cached.docs.map((d) => [d.id, cleanPaper(d.data())]));
-    } catch { /* no cache */ }
-  }
-  if (papers && since) {
-    const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))), getCountFromServer(col)]);
-    delta.docs.forEach((d) => { papers.set(d.id, cleanPaper(d.data())); if (lib?.built) updateIndex(lib.built, d.id, papers.get(d.id)); });
-    fetched = delta.size;
-    if (papers.size !== count.data().count) papers = null;
-  }
-  if (!papers || !since) {
-    const all = await getDocs(col);
-    papers = new Map(all.docs.map((d) => [d.id, cleanPaper(d.data())]));
-    fetched = all.size; mode = 'full'; since = null;
-  }
-  const t = newest(papers, since);
-  if (t) writeSync(t);
-  const keep = mode === 'delta' && lib?.built;
-  lib = { papers, built: keep ? lib.built : null, stale: false,
-    get index() { return (this.built = this.built || buildIndex(this.papers)); } }; // built on first search
-  if (typeof window !== 'undefined') window.__jcCatalogue = { mode, fetched, size: papers.size };
-  return lib;
-}
-export const dirty = () => { if (lib) lib.stale = true; };
-// A paper removed here, or found missing: drop it now rather than re-reading the catalogue.
-const forget = (id) => { if (lib) { lib.papers.delete(id); if (lib.built) updateIndex(lib.built, id, null); } };
 
 // PDF text and notes are searched by the Worker. Errors (offline, search not set up) leave metadata hits only.
 async function serverSearch(q) {
@@ -88,76 +59,302 @@ export function renderLibraryRoute(r, ctx) {
   if (r.name === 'import') return renderImport();
   if (r.name === 'paper' && r.arg) return renderPaper(r.arg, Number(r.arg2) || null);
   if (r.name === 'remove' && r.arg) return renderRemove(r.arg);
-  if (r.name === 'lists') return renderLists();
-  if (r.name === 'list' && r.arg) return renderList(r.arg);
+  if (r.name === 'lists') return renderSaved(c, loadLibrary, paperItem);
+  if (r.name === 'list' && r.arg) return renderList(c, r.arg, loadLibrary, paperItem);
   if (r.name === 'reindex') return renderReindex();
+  if (r.name === 'duplicates') return renderDuplicates(c, loadLibrary);
   return renderSearch();
 }
+
+const presentedOn = (e) => (e.date?.toDate ? e.date.toDate() : new Date(e.date));
 
 function paperItem(id, p, page, snippet) {
   const meta = [p.journal, p.year].filter(Boolean).join(' ');
   const tags = (p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ');
   const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
   const pdf = p.file ? ' <span class="muted">PDF</span>' : '';
+  const noAbs = p.abstract ? '' : ' <span class="warn-text">no abstract</span>';
   const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
+  const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${c.esc(authorLine(p.authors))}</span>` : '';
   const last = (p.presented || []).at(-1);
-  const badge = last ? ` <span class="badge">Presented ${c.esc(last.date.toDate().toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</span>` : '';
-  return c.el(`<li class="paper"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>
-    <span class="muted">${c.esc(meta)}${pdf}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
+  const badge = last ? ` <span class="badge">Presented ${c.esc(presentedOn(last).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</span>` : '';
+  return c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>${authors}
+    <span class="muted">${c.esc(meta)}${pdf}${noAbs}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
 }
 
 async function renderSearch() {
-  const page = c.el(`<section class="card"><h1>Library</h1>
+  const t0 = performance.now();
+  const admin = c.member.role === 'admin';
+  const page = c.el(`<section class="card lib"><h1>Library</h1>
     <form id="sf" role="search" class="row"><input id="q" type="search" aria-label="Search the library"
       placeholder="Search titles, tags, notes and PDFs" autocomplete="off"></form>
-    <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a> <a href="#/lists">Reading lists</a></p>
-    <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul>
-    <p><button id="more" class="link" hidden>Show more</button></p></section>`);
+    <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a></p>
+    <div id="chips" class="chips" role="group" aria-label="Filters"></div>
+    <div id="lbar" class="listbar"><button type="button" id="sortb" class="plain" aria-haspopup="dialog" disabled><span id="count">Loading…</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      <button type="button" id="selb" class="link" disabled>Select</button></div>
+    <div id="selhead" class="selhead" hidden><button type="button" id="sback" class="link">‹ Back</button><strong id="scount" aria-live="polite"></strong>
+      <span><button type="button" id="sall" class="link"></button><button type="button" id="snone" class="link">None</button></span></div>
+    <p id="selnote" class="muted" hidden></p>
+    <p id="jobline" class="muted" hidden></p>
+    <ul id="res" class="list"></ul><p id="end" class="muted end"></p>
+    <nav id="selbar" class="selbar" aria-label="Actions on selected papers" hidden></nav></section>`);
   c.view.replaceChildren(page);
-  if (c.member.role === 'admin') mountRefresh(page, c, dirty);
-  const q = $in(page, '#q'), res = $in(page, '#res'), more = $in(page, '#more'), count = $in(page, '#count');
-  q.value = lastQuery;
-  // First open on this device (nothing cached): show the newest papers from a small query while the catalogue loads.
-  if (!lib && !readSync() && !lastQuery) {
-    const head = await getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))).catch(() => null);
-    if (head && !lib) {
-      res.replaceChildren(...head.docs.map((d) => paperItem(d.id, d.data())));
-      count.textContent = 'Loading the library…';
+  const q = $in(page, '#q'), res = $in(page, '#res'), count = $in(page, '#count'), end = $in(page, '#end');
+  q.value = ui.q;
+  const tabbar = document.getElementById('tabbar');
+  const x = { starred: new Set(), indexed: null, ratings: null, recent: [] };
+
+  // First paint: the newest 50 saved on this device, else (first open here) a small query, while the catalogue loads.
+  if (!current() || current().stale) {
+    const head = !ui.q && !filterOn(ui.filter) && ui.sort === 'newest' ? readHead() : null;
+    if (head?.length) {
+      res.replaceChildren(...head.map(([id, p]) => paperItem(id, p)));
+      timing.head = Math.round(performance.now() - t0);
+    } else if (!readSync() && !ui.q) {
+      const h = await getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))).catch(() => null);
+      if (h && !current() && page.isConnected) {
+        res.replaceChildren(...h.docs.map((d) => paperItem(d.id, cleanPaper(d.data()))));
+        timing.head = Math.round(performance.now() - t0);
+      }
     }
   }
-  const cat = await loadLibrary();
+  const [cat, starred, recent] = await Promise.all([loadLibrary(), loadStarred(c.db, c.user.uid), loadRecent(c.db, c.user.uid)]);
   if (!page.isConnected) return;
+  x.starred = starred; x.recent = recent;
   const { papers } = cat;
-  let all = null, timer = 0, seq = 0;
-  const showList = () => {
-    all = all || [...papers].sort((a, b) => (b[1].addedAt?.seconds || 0) - (a[1].addedAt?.seconds || 0));
+
+  let matchIds = [], info = new Map(), timer = 0, seq = 0, sel = null, mode = 'list';
+  const narrowed = () => !!ui.q || filterOn(ui.filter);
+  const ok = (id) => papers.has(id) && matches(id, papers.get(id), ui.filter, x);
+  const row = (id) => {
+    const h = info.get(id) || {};
+    const li = paperItem(id, papers.get(id), h.page, h.snippet);
+    if (sel) {
+      li.classList.add('selecting');
+      const box = c.el('<input type="checkbox" class="pick">');
+      box.checked = sel.has(id);
+      box.setAttribute('aria-label', `Select ${papers.get(id).title}`);
+      box.onchange = () => toggle(id, box.checked);
+      li.prepend(box);
+      li.classList.toggle('picked', sel.has(id));
+    }
+    return li;
+  };
+  const appendRows = () => {
     const from = res.children.length;
-    all.slice(from, shown).forEach(([id, p]) => res.append(paperItem(id, p)));
-    more.hidden = shown >= all.length;
-    count.textContent = all.length ? `${all.length} papers, newest first` : 'No papers yet. Add the first one.';
+    matchIds.slice(from, ui.shown).forEach((id) => res.append(row(id)));
+    end.textContent = res.children.length < matchIds.length ? `Next ${Math.min(PAGE, matchIds.length - res.children.length)} load as you scroll` : '';
+  };
+  const redrawRows = () => { res.replaceChildren(); appendRows(); };
+  // Infinite scroll: 50 more whenever the end of the list comes near the screen.
+  const fill = () => {
+    if (!page.isConnected) { io?.disconnect(); return; }
+    let guard = 0;
+    while (res.children.length < matchIds.length && end.getBoundingClientRect().top < innerHeight + 400 && guard++ < 40) { ui.shown += PAGE; appendRows(); }
+  };
+  const io = 'IntersectionObserver' in window ? new IntersectionObserver((e) => { if (e.some((i) => i.isIntersecting)) fill(); }, { rootMargin: '400px 0px' }) : null;
+  io?.observe(end);
+
+  const setCount = (text) => { count.textContent = text; };
+  const drawList = () => {
+    mode = 'list'; info = new Map();
+    const entries = sortEntries([...papers].filter(([id, p]) => matches(id, p, ui.filter, x)), ui.sort, x);
+    matchIds = entries.map(([id]) => id);
+    ui.shown = Math.max(ui.shown, PAGE);
+    redrawRows();
+    if (!papers.size) setCount('No papers yet. Add the first one.');
+    else setCount(`${matchIds.length} ${matchIds.length === 1 ? 'paper' : 'papers'} · ${sortLabel(ui.sort)}`);
+    if (!filterOn(ui.filter) && ui.sort === 'newest') writeHead(entries);
+    drawSel();
   };
   const showHits = (hits, done) => {
-    res.replaceChildren(...hits.map((h) => paperItem(h.paperId, papers.get(h.paperId), h.page, h.snippet)));
-    count.textContent = hits.length ? `${hits.length} found${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…';
+    mode = 'search';
+    const kept = hits.filter((h) => ok(h.paperId));
+    info = new Map(kept.map((h) => [h.paperId, h]));
+    matchIds = kept.map((h) => h.paperId);
+    ui.shown = PAGE;
+    redrawRows();
+    setCount(kept.length ? `${kept.length} found${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…');
+    drawSel();
   };
   const show = () => {
-    lastQuery = q.value.trim();
+    ui.q = q.value.trim();
     const mine = ++seq;
     clearTimeout(timer);
-    more.hidden = true;
-    if (!lastQuery) { res.replaceChildren(); shown = Math.max(shown, PAGE); showList(); return; }
-    const local = searchPapers(cat.index, lastQuery).filter((h) => papers.has(h.paperId));
-    if (lastQuery.length < 3) { showHits(local, true); return; }
+    if (!ui.q) { drawList(); return; }
+    const local = searchPapers(cat.index, ui.q).filter((h) => papers.has(h.paperId));
+    if (ui.q.length < 3) { showHits(local, true); return; }
     showHits(local, false);
     timer = setTimeout(async () => {
-      const server = await serverSearch(lastQuery);
-      if (mine === seq) showHits(mergeHits(local, server, (id) => papers.has(id)), true);
+      const server = await serverSearch(ui.q);
+      if (mine === seq && page.isConnected) showHits(mergeHits(local, server, (id) => papers.has(id)), true);
     }, 250);
   };
-  more.onclick = () => { shown += PAGE; showList(); };
+  const redraw = () => { drawChips(); show(); };
+
+  // ---- Filter chips ----
+  const chipsEl = $in(page, '#chips');
+  const chip = (label, on, onclick, extra = '') => {
+    const b = c.el(`<button type="button" class="chip${on ? ' on' : ''}" aria-pressed="${on}"${extra}></button>`);
+    b.textContent = label;
+    if (on && label !== 'All') b.append(c.el('<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>'));
+    b.onclick = onclick;
+    return b;
+  };
+  function drawChips() {
+    const n = chipCounts([...papers], x);
+    const f = ui.filter;
+    const out = [chip('All', !filterOn(f), () => { ui.filter = emptyFilter(); redraw(); })];
+    for (const [k, label] of CHIPS) {
+      if (k === 'notIndexed' && (!x.indexed || (!n[k] && !f.chips.has(k)))) continue;
+      out.push(chip(`${label} · ${n[k]}`, f.chips.has(k), () => { if (f.chips.has(k)) f.chips.delete(k); else f.chips.add(k); redraw(); }));
+    }
+    out.push(chip(f.tag ? `Tag: ${f.tag}` : 'Tag ▾', !!f.tag, () => (f.tag ? (f.tag = null, redraw()) : tagSheet()), ' aria-haspopup="dialog"'));
+    const yr = f.yearFrom != null || f.yearTo != null;
+    out.push(chip(yr ? `${f.yearFrom ?? '…'}–${f.yearTo ?? '…'}` : 'Year ▾', yr, () => (yr ? (f.yearFrom = f.yearTo = null, redraw()) : yearSheet()), ' aria-haspopup="dialog"'));
+    chipsEl.replaceChildren(...out);
+  }
+  function tagSheet() {
+    const tags = tagCounts([...papers]);
+    const d = sheet(c, 'Filter by tag', `<h2 class="sheet-title">Tag</h2><div class="chips wrap" id="tl"></div>`);
+    const tl = d.querySelector('#tl');
+    if (!tags.length) tl.append(c.el('<p class="muted">No tags yet.</p>'));
+    tags.forEach(([t, k]) => tl.append(chip(`${t} · ${k}`, false, () => { ui.filter.tag = t; d.close(); redraw(); })));
+  }
+  function yearSheet() {
+    const d = sheet(c, 'Filter by year', `<h2 class="sheet-title">Year</h2><form class="row" id="yf">
+      <input id="yfrom" type="number" inputmode="numeric" min="1900" max="2100" placeholder="From" aria-label="From year">
+      <input id="yto" type="number" inputmode="numeric" min="1900" max="2100" placeholder="To" aria-label="To year">
+      <button class="primary">Apply</button></form>`);
+    d.querySelector('#yf').onsubmit = (e) => {
+      e.preventDefault();
+      const v = (s) => (d.querySelector(s).value ? Number(d.querySelector(s).value) : null);
+      ui.filter.yearFrom = v('#yfrom'); ui.filter.yearTo = v('#yto');
+      d.close(); redraw();
+    };
+  }
+
+  // ---- Sort and view ----
+  $in(page, '#sortb').onclick = () => {
+    const d = sheet(c, 'Sort', `<h2 class="sheet-title">Sort by</h2><ul class="list">${SORTS.map(([k, l]) => `<li><label class="check-row">
+      <input type="radio" name="sort" value="${k}"${k === ui.sort ? ' checked' : ''}><span class="grow">${l}</span></label></li>`).join('')}</ul>
+      <ul class="list"><li><label class="check-row"><input type="checkbox" id="sauth"${showAuthors() ? ' checked' : ''}><span class="grow">Show authors</span></label></li></ul>`);
+    d.querySelectorAll('input[name=sort]').forEach((r) => { r.onchange = async () => {
+      ui.sort = r.value;
+      if (ui.sort === 'rating' && !x.ratings) {
+        const ns = await getDocs(collectionGroup(c.db, 'notes')).catch(() => null);
+        x.ratings = averageRatings((ns?.docs || []).map((n) => ({ paperId: n.ref.parent.parent.id, rating: n.data().rating })));
+      }
+      d.close(); ui.q = ''; q.value = ''; show();
+    }; });
+    d.querySelector('#sauth').onchange = (e) => { try { localStorage.setItem(AUTHORS_KEY, e.target.checked ? '1' : '0'); } catch { /* private */ } redrawRows(); };
+  };
+
+  // ---- Select mode ----
+  const selhead = $in(page, '#selhead'), lbar = $in(page, '#lbar'), selbar = $in(page, '#selbar'), selnote = $in(page, '#selnote');
+  const allCount = () => (narrowed() ? Math.min(matchIds.length, SELECT_CAP) : res.children.length);
+  function startSelect(ids) { sel = new Set(ids); redrawRows(); drawSel(); }
+  function stopSelect() { sel = null; redrawRows(); drawSel(); }
+  function toggle(id, on = !sel.has(id)) {
+    if (on) sel.add(id); else sel.delete(id);
+    const li = res.querySelector(`li[data-id="${CSS.escape(id)}"]`);
+    if (li) { li.classList.toggle('picked', on); li.querySelector('.pick').checked = on; }
+    drawSel();
+  }
+  function drawSel() {
+    const on = !!sel;
+    selhead.hidden = !on; lbar.hidden = on; selbar.hidden = !on;
+    if (tabbar) tabbar.hidden = on;
+    document.body.classList.toggle('selecting', on);
+    if (!on) { selnote.hidden = true; return; }
+    for (const id of [...sel]) if (!papers.has(id)) sel.delete(id);
+    $in(page, '#scount').textContent = `${sel.size} selected`;
+    $in(page, '#sall').textContent = `All ${allCount()}`;
+    const all = narrowed() && sel.size && sel.size === allCount();
+    selnote.hidden = !all;
+    selnote.textContent = all ? `All ${sel.size} matching papers selected${matchIds.length > SELECT_CAP ? ` (the first ${SELECT_CAP} of ${matchIds.length})` : ''}.` : '';
+    const ids = [...sel];
+    const btn = (key, label, act, primary = false) => {
+      const b = c.el(`<button type="button"${primary ? ' class="on"' : ''}><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">${ICON[key]}</svg><span></span></button>`);
+      b.querySelector('span').textContent = label;
+      b.disabled = !ids.length;
+      b.onclick = act;
+      return b;
+    };
+    const after = () => { if (page.isConnected) { drawChips(); show(); } };
+    const pick = (missing) => { if (page.isConnected) startSelect(missing); else { ui.pendingSel = missing; location.hash = '#/library'; } };
+    const out = [btn('add', 'Add to…', () => addToSheet(c, ids, after))];
+    if (admin) {
+      if (ui.filter.chips.has('notIndexed')) {
+        const n = ids.filter((id) => papers.get(id)?.file).length;
+        out.push(btn('refresh', `Reindex ${n}`, () => reindexSelected(c, ids, () => { drawChips(); show(); }, pick), true));
+      } else {
+        const n = ids.filter((id) => refreshId(papers.get(id) || {})).length;
+        out.push(btn('refresh', `Refresh ${n}`, () => refreshSelected(c, ids, after, pick), narrowed()));
+      }
+    }
+    const allStarred = ids.length && ids.every((id) => x.starred.has(id));
+    out.push(btn('star', allStarred ? 'Unstar' : 'Star', () => starSelected(c, ids, after)));
+    out.push(btn('more', 'More', () => moreSheet(c, ids, {
+      reindex: () => reindexSelected(c, ids, after, pick),
+      remove: () => removeSelected(c, ids, () => { ids.forEach((id) => sel?.delete(id)); after(); }),
+    })));
+    selbar.style.gridTemplateColumns = `repeat(${out.length}, minmax(0, 1fr))`;
+    selbar.replaceChildren(...out);
+  }
+  $in(page, '#selb').onclick = () => startSelect([]);
+  $in(page, '#sback').onclick = stopSelect;
+  $in(page, '#snone').onclick = () => { sel = new Set(); redrawRows(); drawSel(); };
+  $in(page, '#sall').onclick = () => {
+    sel = new Set(selectAll([...res.children].map((li) => li.dataset.id), matchIds, narrowed()));
+    if (narrowed()) { ui.shown = Math.max(ui.shown, sel.size); }
+    redrawRows(); drawSel();
+  };
+  // Tap a row to tick it while selecting; long-press any row to start.
+  let press = null, eat = false;
+  res.addEventListener('pointerdown', (e) => {
+    eat = false;
+    const li = e.target.closest('li.paper');
+    if (!li || sel || e.button > 0) return;
+    press = { x: e.clientX, y: e.clientY, t: setTimeout(() => { press = null; eat = true; startSelect([li.dataset.id]); navigator.vibrate?.(10); }, 500) };
+  });
+  const cancel = () => { if (press) { clearTimeout(press.t); press = null; } };
+  res.addEventListener('pointermove', (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancel(); });
+  res.addEventListener('pointerup', () => { cancel(); if (eat) setTimeout(() => { eat = false; }, 400); });
+  res.addEventListener('pointercancel', cancel);
+  res.addEventListener('contextmenu', (e) => { if (e.target.closest('li.paper')) e.preventDefault(); });
+  res.addEventListener('click', (e) => {
+    const li = e.target.closest('li.paper');
+    if (!li) return;
+    if (eat) { e.preventDefault(); eat = false; return; }
+    if (!sel || e.target.classList.contains('pick')) return;
+    e.preventDefault();
+    toggle(li.dataset.id);
+  });
+
+  // ---- A refresh or reindex still running (or just finished) ----
+  const jobline = $in(page, '#jobline');
+  const drawJob = () => {
+    if (!page.isConnected) return offJob();
+    jobline.hidden = !job;
+    if (!job) return;
+    jobline.replaceChildren(c.el(`<span>${job.kind === 'refresh' ? 'Refreshing' : 'Reindexing'} ${job.running ? `${job.done} of ${job.total}` : `done (${job.total})`} · </span>`));
+    const b = c.el('<button type="button" class="link">Show</button>');
+    b.onclick = () => jobSheet(c, (ids) => startSelect(ids));
+    jobline.append(b);
+  };
+  const offJob = onJob(drawJob);
+  drawJob();
+
   q.oninput = show;
   $in(page, '#sf').onsubmit = (e) => { e.preventDefault(); q.blur(); };
+  drawChips();
+  $in(page, '#sortb').disabled = false; $in(page, '#selb').disabled = false; // wired up now the catalogue is here
+  if (ui.pendingSel) { sel = new Set(ui.pendingSel); ui.pendingSel = null; }
   show();
+  timing.list = Math.round(performance.now() - t0);
+  (window.requestIdleCallback || ((f) => setTimeout(f, 300)))(() => { if (page.isConnected) void cat.index; });
+  indexedIds(c).then((s) => { if (s && page.isConnected) { x.indexed = s; drawChips(); if (ui.filter.chips.has('notIndexed')) show(); } });
 }
 
 async function renderAdd() {
@@ -217,6 +414,7 @@ async function storePdf(id, buf, pages) {
   const ix = await apiFetch(`/api/index/${id}`, { method: 'PUT', body: JSON.stringify({ pages }), headers: { 'Content-Type': 'application/json' } })
     .catch(() => null);
   if (!ix?.ok) console.warn('PDF stored, but its text was not indexed for search');
+  else markIndexed(id);
   await updateDoc(doc(c.db, 'papers', id), { file: { pages: pages.length, size: buf.byteLength }, changedAt: serverTimestamp() });
   return null;
 }
@@ -302,7 +500,9 @@ async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { forget(id); c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
   const p = cleanPaper(snap.data());
-  const [ns, ls] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')), getDocs(collection(c.db, 'lists'))]);
+  const [ns, lists, starred] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')),
+    loadLists(c.db, c.user.uid, c.member.role === 'admin').catch(() => []), loadStarred(c.db, c.user.uid)]);
+  touchRecent(c.db, c.user.uid, id);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
   const mine = notes.find((n) => n.uid === c.user.uid);
   const rated = notes.filter((n) => n.rating > 0);
@@ -314,6 +514,7 @@ async function renderPaper(id, hitPage) {
   ].filter(Boolean).join(' · ');
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
+    <p class="actions"><button type="button" id="star" class="star-btn"></button></p>
     <p>${links}</p>
     <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
@@ -326,7 +527,7 @@ async function renderPaper(id, hitPage) {
       <button class="primary">Save note</button></form>
     <ul id="notes" class="list"></ul>
     <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
-    <h2>Reading lists</h2><form id="rl" class="row"><select id="lsel" aria-label="Reading list"></select><button>Add to list</button></form>
+    <h2>Reading lists</h2><p id="inlists" class="muted"></p><p class="actions"><button type="button" id="addto">Lists and tags…</button></p>
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
 
@@ -399,16 +600,19 @@ async function renderPaper(id, hitPage) {
     }
   })().catch(() => {});
 
-  // Reading lists this member may edit.
-  const editable = ls.docs.filter((d) => c.member.role === 'admin' || d.data().createdBy === c.user.uid);
-  const sel = $in(page, '#lsel');
-  if (!editable.length) $in(page, '#rl').replaceChildren(c.el('<p class="muted">No lists of yours yet. <a href="#/lists">Make one</a>.</p>'));
-  editable.forEach((d) => sel.append(c.el(`<option value="${d.id}">${c.esc(d.data().name)}${d.data().paperIds.includes(id) ? ' (added)' : ''}</option>`)));
-  $in(page, '#rl').onsubmit = async (e) => {
-    e.preventDefault();
-    await updateDoc(doc(c.db, 'lists', sel.value), { paperIds: arrayUnion(id) });
-    location.hash = `#/list/${sel.value}`;
+  // Star, and the lists it is in: the Add to… sheet ticks lists (and tags) for this one paper.
+  const star = $in(page, '#star');
+  const drawStar = () => {
+    const on = starred.has(id);
+    star.innerHTML = `${STAR}<span>${on ? 'Starred' : 'Star'}</span>`;
+    star.setAttribute('aria-pressed', String(on));
+    star.classList.toggle('on', on);
   };
+  star.onclick = async () => { star.disabled = true; await setStarred(c.db, c.user.uid, [id], !starred.has(id)).catch(() => {}); star.disabled = false; drawStar(); };
+  drawStar();
+  const inl = [...(starred.has(id) ? ['Starred'] : []), ...lists.filter((l) => !l.starred && l.paperIds.includes(id)).map((l) => l.name)];
+  $in(page, '#inlists').textContent = inl.length ? `In ${inl.join(', ')}` : 'Not in any of your lists yet.';
+  $in(page, '#addto').onclick = () => { current() ? addToSheet(c, [id], () => renderPaper(id, hitPage)) : loadLibrary().then(() => addToSheet(c, [id], () => renderPaper(id, hitPage))); };
 
   // Tags and why: the adder or an admin, who also get a link to the separate removal page.
   if (mayEdit(p)) {
@@ -490,53 +694,6 @@ async function renderRemove(id) {
       await clearFlags().catch(() => {});
       forget(id); location.hash = '#/library';
     } catch { msg.textContent = 'Could not remove the paper.'; }
-  };
-}
-
-async function renderLists() {
-  const page = c.el(`<section class="card"><h1>Reading lists</h1><ul id="ll" class="list"></ul>
-    <h2>New list</h2><form id="nl" class="stack"><label>Name <input id="lname" required maxlength="80" placeholder="e.g. Obstetric posting"></label>
-      <label>About <input id="labout" maxlength="200"></label><button class="primary">Create list</button></form></section>`);
-  c.view.replaceChildren(page);
-  const ls = await getDocs(collection(c.db, 'lists'));
-  const ul = $in(page, '#ll');
-  if (ls.empty) ul.append(c.el('<li class="muted">No lists yet.</li>'));
-  ls.docs.sort((a, b) => a.data().name.localeCompare(b.data().name)).forEach((d) => ul.append(c.el(
-    `<li><a href="#/list/${d.id}">${c.esc(d.data().name)}</a><span class="muted">${d.data().paperIds.length} papers</span></li>`)));
-  $in(page, '#nl').onsubmit = async (e) => {
-    e.preventDefault();
-    const ref = await addDoc(collection(c.db, 'lists'), {
-      name: $in(page, '#lname').value.trim(), about: $in(page, '#labout').value.trim(), paperIds: [],
-      createdBy: c.user.uid, createdAt: serverTimestamp(),
-    });
-    location.hash = `#/list/${ref.id}`;
-  };
-}
-
-async function renderList(lid) {
-  const snap = await getDoc(doc(c.db, 'lists', lid));
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/lists">Lists</a></p></section>')); return; }
-  const l = snap.data();
-  const edit = c.member.role === 'admin' || l.createdBy === c.user.uid;
-  const page = c.el(`<section class="card"><p><a href="#/lists">← Reading lists</a></p><h1>${c.esc(l.name)}</h1>
-    ${l.about ? `<p>${c.esc(l.about)}</p>` : ''}<ul id="lp" class="list"></ul>
-    ${edit ? '<p class="muted">Add papers from a paper\'s page.</p><button id="dl" class="link danger">Delete list</button>' : ''}</section>`);
-  c.view.replaceChildren(page);
-  const { papers } = await loadLibrary();
-  const ul = $in(page, '#lp');
-  if (!l.paperIds.length) ul.append(c.el('<li class="muted">No papers yet.</li>'));
-  l.paperIds.filter((pid) => papers.has(pid)).forEach((pid) => {
-    const li = paperItem(pid, papers.get(pid));
-    if (edit) {
-      const rm = c.el('<button class="link danger">Remove</button>');
-      rm.onclick = async () => { await updateDoc(snap.ref, { paperIds: arrayRemove(pid) }); renderList(lid); };
-      li.append(rm);
-    }
-    ul.append(li);
-  });
-  if (edit) $in(page, '#dl').onclick = async () => {
-    if (!confirm('Delete this list? The papers stay in the library.')) return;
-    await deleteDoc(snap.ref); location.hash = '#/lists';
   };
 }
 

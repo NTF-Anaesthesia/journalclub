@@ -94,6 +94,11 @@ service cloud.firestore {
         && (!('doi' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('doi', '') == '')
         && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == '')
         && changedAtNowIfSet())
+        // Any member tags papers (one at a time or in bulk from select mode); tags only.
+        || (isMember()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'changedAt'])
+        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20
+        && changedAtNowIfSet())
         // Any member planning a session keeps the paper's `presented` summary in step (written in the session's batch).
         || (isMember()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presented', 'changedAt'])
@@ -101,14 +106,18 @@ service cloud.firestore {
         && changedAtNowIfSet());
       allow delete: if mayEditPaper(pid);
 
-      // One note and rating per member per paper.
+      // One note and rating per member per paper. An admin merging duplicates moves members' notes across
+      // (keeping each note's own updatedAt) and clears them from the paper that goes.
+      function noteOk(d) {
+        return d.keys().hasOnly(['text', 'rating', 'name', 'updatedAt'])
+          && d.text is string && d.text.size() <= 4000
+          && d.rating is int && d.rating >= 0 && d.rating <= 5;
+      }
       match /notes/{uid} {
         allow write: if isMember() && request.auth.uid == uid
-          && (request.method == 'delete' || (
-            request.resource.data.keys().hasOnly(['text', 'rating', 'name', 'updatedAt'])
-            && request.resource.data.text is string && request.resource.data.text.size() <= 4000
-            && request.resource.data.rating is int && request.resource.data.rating >= 0 && request.resource.data.rating <= 5
-            && request.resource.data.updatedAt == request.time));
+          && (request.method == 'delete' || (noteOk(request.resource.data) && request.resource.data.updatedAt == request.time));
+        allow write: if isAdmin()
+          && (request.method == 'delete' || (noteOk(request.resource.data) && request.resource.data.updatedAt is timestamp));
       }
 
     }
@@ -120,21 +129,48 @@ service cloud.firestore {
       allow delete: if mayEditPaper(pid);
     }
 
-    // Reading lists: any member makes one; its maker or an admin edits it.
+    // Reading lists: `visibility` private (the maker only) or shared (every member reads it and adds or removes
+    // papers; the maker or an admin renames or deletes it). Lists from before visibility existed count as shared
+    // until an admin's app stamps them. Each member's Starred list is `lists/star-<uid>`, private, kind "starred".
+    // Admins read every list, so merging duplicates can repoint papers in private lists too.
+    function listShared(d) { return d.get('visibility', 'shared') == 'shared'; }
+    function listOk(d) {
+      return d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && d.paperIds is list && d.paperIds.size() <= 2000
+        && d.get('visibility', 'shared') in ['private', 'shared'];
+    }
     match /lists/{lid} {
-      allow read: if isMember();
+      // A list that doesn't exist (yet: a member's Starred list) reads as missing rather than denied.
+      allow get: if isMember() && (resource == null || listShared(resource.data) || resource.data.createdBy == request.auth.uid || isAdmin());
+      // Queries: where visibility == shared, or where createdBy == me; admins list everything.
+      allow list: if isMember() && (resource.data.visibility == 'shared' || resource.data.createdBy == request.auth.uid || isAdmin());
       allow create: if isMember()
-        && request.resource.data.keys().hasOnly(['name', 'about', 'paperIds', 'createdBy', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['name', 'about', 'paperIds', 'createdBy', 'createdAt', 'visibility', 'kind'])
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.createdAt == request.time
-        && request.resource.data.name is string && request.resource.data.name.size() > 0
-        && request.resource.data.paperIds is list;
-      allow update: if (isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid))
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'about', 'paperIds'])
-        && request.resource.data.paperIds is list && request.resource.data.paperIds.size() <= 500;
+        && request.resource.data.visibility in ['private', 'shared']
+        && listOk(request.resource.data)
+        && (!('kind' in request.resource.data)
+            || (request.resource.data.kind == 'starred' && lid == 'star-' + request.auth.uid
+                && request.resource.data.visibility == 'private'));
+      allow update: if listOk(request.resource.data) && (
+        ((isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'about', 'paperIds', 'visibility'])
+          && (resource.data.get('kind', '') != 'starred' || request.resource.data.visibility == 'private'))
+        || (isMember() && listShared(resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['paperIds'])));
       allow delete: if isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid);
     }
 
+    // Per-member preferences synced across devices: the last 20 papers opened. Own doc only.
+    match /users/{uid} {
+      allow read: if isMember() && request.auth.uid == uid;
+      allow write: if isMember() && request.auth.uid == uid
+        && (request.method == 'delete' || (
+          request.resource.data.keys().hasOnly(['recent', 'updatedAt'])
+          && request.resource.data.recent is list && request.resource.data.recent.size() <= 20
+          && request.resource.data.updatedAt == request.time));
+    }
 
     // Club settings: members read (the Teams link is for them); only admins change the Teams link, prompt,
     // default start time and the default discussion form.

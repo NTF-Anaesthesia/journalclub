@@ -100,7 +100,13 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
   await page.goto('/?emulator#/library');
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
-  await page.getByRole('button', { name: 'Add to list' }).click();
+  await page.getByRole('button', { name: 'Lists and tags…' }).click();
+  const sheet = page.getByRole('dialog', { name: 'Add 1 paper to' });
+  await sheet.getByRole('checkbox', { name: /Research methods/ }).check();
+  await sheet.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('In Research methods')).toBeVisible();
+  await page.getByRole('link', { name: 'Saved', exact: true }).click();
+  await page.getByRole('link', { name: /Research methods/ }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Why Most Published Research Findings Are False' })).toBeVisible();
   expect(await noSideScroll(page)).toBe(true);
@@ -194,16 +200,28 @@ test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named pa
   expect((await seed('none1', { title: s('ward round handout'), doi: s('') })).ok()).toBeTruthy();
   await page.goto('/?emulator#/library');
   await page.reload();
-  await page.getByRole('button', { name: 'Refresh abstracts' }).click();
-  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: [2-9] updated,/, { timeout: 20000 });
-  await expect(page.getByRole('link', { name: 'SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications' })).toBeVisible();
-  await expect(page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ })).toBeVisible();
-  await page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ }).click();
+  // Refresh lives in select mode: tick the three papers; the button counts only those with an ID.
+  await page.getByRole('button', { name: 'Select', exact: true }).click();
+  // Other specs share this emulator project, so rows are picked by paper id.
+  for (const id of ['old1', 'atotw1', 'none1']) await page.locator(`#res li[data-id="${id}"]`).click();
+  await expect(page.locator('#scount')).toHaveText('3 selected');
+  await page.getByRole('button', { name: 'Refresh 2' }).click();
+  const prog = page.getByRole('dialog', { name: 'Refreshing papers' });
+  await expect(prog.getByRole('heading', { name: 'Done: 3 papers' })).toBeVisible({ timeout: 20000 });
+  await expect(prog.locator('li', { hasText: 'Skipped, no ID' })).toContainText('1');
+  await prog.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: '‹ Back' }).click();
+  await expect(page.locator('a[href="#/paper/atotw1"]')).toHaveText('SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications');
+  await expect(page.locator('a[href="#/paper/old1"]')).toHaveText(/Alogliptin after Acute Coronary Syndrome/);
+  await page.locator('a[href="#/paper/old1"]').click();
   await expect(page.locator('.tag', { hasText: /^keep$/ }).first()).toBeVisible();
   // A second run finds nothing to change.
   await page.goto('/?emulator#/library');
   await page.reload();
-  await expect(page.locator('#count')).toContainText('papers, newest first');
-  await page.getByRole('button', { name: 'Refresh abstracts' }).click();
-  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: 0 updated,/, { timeout: 20000 });
+  await expect(page.locator('#count')).toContainText('papers · Newest first');
+  await page.getByRole('button', { name: 'Select', exact: true }).click();
+  for (const id of ['old1', 'atotw1']) await page.locator(`#res li[data-id="${id}"]`).click();
+  await page.getByRole('button', { name: 'Refresh 2' }).click();
+  await expect(prog.getByRole('heading', { name: 'Done: 2 papers' })).toBeVisible({ timeout: 20000 });
+  await expect(prog.locator('li', { hasText: 'Already up to date' })).toContainText('2');
 });

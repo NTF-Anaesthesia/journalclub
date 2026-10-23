@@ -26,10 +26,11 @@ test('a member plans a session from a paper page; the paper and the list show it
     expect(r.ok()).toBeTruthy();
   }
 
-  // Tabs are Library, Club, Saved, Sessions: no Vote.
+  // Tabs are Library, Saved, Club: no Vote, no Sessions.
   await res.goto('/?emulator#/home');
   await expect(res.locator('#tabs').getByText('Vote')).toHaveCount(0);
   await expect(res.locator('#tabs').getByText('Saved')).toBeVisible();
+  await expect(res.locator('#tabs .app-tab')).toHaveText(['Library', 'Saved', 'Club']);
   await res.goto('/?emulator#/rota');
   await expect(res.getByRole('heading', { name: 'Presenter rota' })).toHaveCount(0);
 
@@ -63,10 +64,11 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.locator('li.paper', { hasText: 'Sugammadex' }).getByText(`Presented ${mon}`)).toBeVisible();
   await expect(res.locator('li.paper', { hasText: 'Tranexamic' }).getByText(/Presented/)).toHaveCount(0);
 
-  // Home shows the next session; the session page is read-only and the creator (a plain member) edits behind Edit session.
+  // Club shows the next session; the session page is read-only and the creator (a plain member) edits behind Edit session.
   await res.goto('/?emulator#/home');
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
-  await res.locator('#next a').click();
+  await expect(res.getByRole('link', { name: 'Add take-home point' })).toBeVisible();
+  await res.locator('#nexts').click();
   const sid = res.url().split('/session/')[1];
   await expect(res.getByLabel('Summary')).toHaveCount(0);
   await expect(res.locator('#saveall')).toHaveCount(0);

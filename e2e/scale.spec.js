@@ -68,12 +68,13 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   const firstPage = Date.now() - t0;
   console.log(`first page of 1000 papers: ${firstPage} ms`);
   expect(firstPage).toBeLessThan(2000);
-  await expect(page.getByText('1000 papers, newest first')).toBeVisible();
+  await expect(page.getByText('1000 papers · Newest first')).toBeVisible();
   await expect(page.locator('#res li').first()).toContainText('Seeded trial 0999');
-  expect(await stats(page)).toEqual({ mode: 'full', fetched: 1000, size: 1000 });
+  await expect.poll(() => stats(page)).toEqual({ mode: 'full', fetched: 1000, size: 1000 });
 
-  await page.getByRole('button', { name: 'Show more' }).click();
-  await expect(page.locator('#res li')).toHaveCount(100);
+  // Infinite scroll: the next 50 load as the end of the list comes near.
+  await page.locator('#end').scrollIntoViewIfNeeded();
+  await expect.poll(() => page.locator('#res li').count()).toBeGreaterThanOrEqual(100);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // A word inside a PDF: the Worker returns the paper, its page and a snippet.
@@ -92,17 +93,24 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   await expect(page.getByText('Nothing found.')).toBeVisible();
   await page.getByLabel('Search the library').fill('');
 
-  // Repeat open: the catalogue comes from the cache plus only the papers changed since.
+  // Repeat open: the newest 50 paint from this device first (under 1 s), then the catalogue comes from the
+  // cache plus only the papers changed since. Where the time goes is logged for each step.
+  const t1 = Date.now();
   await page.reload();
+  await expect(page.locator('#res li').first()).toContainText('Seeded trial 0999');
+  const repeat = Date.now() - t1;
+  await expect(page.getByText('1000 papers · Newest first')).toBeVisible();
+  console.log(`repeat open: first rows ${repeat} ms; app timings ${JSON.stringify(await page.evaluate(() => window.__jcTiming))}`);
+  expect(repeat).toBeLessThan(1000);
   await expect(page.locator('#res li')).toHaveCount(50);
-  expect(await stats(page)).toEqual({ mode: 'delta', fetched: 0, size: 1000 });
+  await expect.poll(() => stats(page)).toEqual({ mode: 'delta', fetched: 0, size: 1000 });
 
   const r = await page.request.patch(`${DOCS}/papers/s0003?updateMask.fieldPaths=title&updateMask.fieldPaths=changedAt`, {
     headers: owner, data: { fields: { title: s('Renamed trial three'), changedAt: at(Date.now()) } } });
   expect(r.ok()).toBeTruthy();
   await page.reload();
   await expect(page.locator('#res li')).toHaveCount(50);
-  expect(await stats(page)).toEqual({ mode: 'delta', fetched: 1, size: 1000 });
+  await expect.poll(() => stats(page)).toEqual({ mode: 'delta', fetched: 1, size: 1000 });
   await page.getByLabel('Search the library').fill('renamed');
   await expect(page.locator('#res li').first()).toContainText('Renamed trial three');
 
@@ -110,5 +118,5 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   expect((await page.request.delete(`${DOCS}/papers/s0004`, { headers: owner })).ok()).toBeTruthy();
   await page.reload();
   await expect(page.locator('#res li')).toHaveCount(50);
-  expect(await stats(page)).toEqual({ mode: 'full', fetched: 999, size: 999 });
+  await expect.poll(() => stats(page)).toEqual({ mode: 'full', fetched: 999, size: 999 });
 });

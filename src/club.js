@@ -1,12 +1,12 @@
 // Journal club pages: home (next session), the Plan a session sheet, session pages.
 import qrcode from 'qrcode-generator';
-import { decodeEntities, cleanPaper } from './abstract.js';
+import { decodeEntities } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, query, where, orderBy,
-  limit, writeBatch, serverTimestamp, Timestamp,
+  writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore';
 
-import { dirty as dirtyLibrary } from './library.js';
+import { dirty as dirtyLibrary, loadLibrary } from './catalogue.js';
 import { personIndex } from './people.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
@@ -49,49 +49,43 @@ export { fieldEditor };
 export function renderClubRoute(r, ctx) {
   c = ctx;
   if (r.name === 'plan') return renderPlan(r.arg === '-' ? '' : r.arg, r.arg2);
-  if (r.name === 'sessions') return renderSessions();
   if (r.name === 'session' && r.arg) return renderSession(r.arg);
   if (r.name === 'point' && r.arg) return renderPoint(r.arg);
   return renderHome();
 }
 
-async function nextSession() {
-  const s = await getDocs(query(collection(c.db, 'sessions'), where('date', '>=', startOfToday()), orderBy('date'), limit(1)));
-  return s.empty ? null : { id: s.docs[0].id, ...s.docs[0].data() };
-}
-
+// Club tab (#/home and #/sessions): today's or the next session first, then Plan a session, Upcoming and Past.
 async function renderHome() {
-  const page = c.el(`<section class="card"><h1>Journal Club</h1>
+  const page = c.el(`<section class="card"><h1>Club</h1>
     <h2>Next session</h2><div id="next"><p class="muted">Loading…</p></div>
-    <p class="actions"><a class="button primary" href="#/plan">Plan a session</a> <a href="#/sessions">All sessions</a> <a href="#/library">Library</a></p></section>`);
-  c.view.replaceChildren(page);
-  const [next, club] = await Promise.all([nextSession(), loadClub()]);
-  $in(page, '#next').replaceChildren(next
-    ? c.el(`<p class="next"><a href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
-        ${c.esc(decodeEntities(next.paperTitle))}<br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`)
-    : c.el('<p class="muted">No session planned yet.</p>'));
-  const url = next && safeUrl(next.teamsUrl || club.teamsUrl);
-  if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
-    $in(page, '#next').append(c.el(`<p><a class="button primary" id="join" href="${c.esc(url)}" target="_blank" rel="noopener">Join on Teams</a></p>`));
-  }
-}
-
-async function renderSessions() {
-  const page = c.el(`<section class="card"><h1>Sessions</h1>
     <p class="actions"><a class="button primary" href="#/plan">Plan a session</a></p>
     <h2>Upcoming</h2><ul id="up" class="list"></ul><h2>Past</h2><ul id="past" class="list"></ul></section>`);
   c.view.replaceChildren(page);
-  const ss = await getDocs(query(collection(c.db, 'sessions'), orderBy('date')));
+  const [ss, club] = await Promise.all([getDocs(query(collection(c.db, 'sessions'), orderBy('date'))), loadClub()]);
+  if (!page.isConnected) return;
   const today = startOfToday().toMillis();
   const up = $in(page, '#up'); const past = $in(page, '#past');
+  let next = null;
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
       <span>${c.esc(decodeEntities(s.paperTitle))}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
-    if (s.date.toMillis() >= today) up.append(li); else past.prepend(li);
+    if (s.date.toMillis() >= today) { if (!next) next = { id: d.id, ...s }; else up.append(li); } else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
   if (!past.children.length) past.append(c.el('<li class="muted">None yet.</li>'));
+  const box = $in(page, '#next');
+  if (!next) box.replaceChildren(c.el('<p class="muted">No session planned yet.</p>'));
+  else {
+    const hasSlides = next.slidesFile?.kind || safeUrl(next.slides);
+    box.replaceChildren(c.el(`<p class="next"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
+        <a href="#/paper/${c.esc(next.paperId)}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
+      c.el(`<p class="actions">${hasSlides ? `<a href="#/session/${next.id}">Slides</a>` : ''}<a href="#/point/${next.id}">Add take-home point</a></p>`));
+    const url = safeUrl(next.teamsUrl || club.teamsUrl);
+    if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
+      box.prepend(c.el(`<p><a class="button primary" id="join" href="${c.esc(url)}" target="_blank" rel="noopener">Join on Teams</a></p>`));
+    }
+  }
   if (isAdmin()) page.append(exportPanel());
 }
 
@@ -159,15 +153,15 @@ const mayPlanSession = (s) => isAdmin() || (!s.locked && [s.createdBy, s.present
 // the same sheet, then the summary, slides, discussion and (admins) the session settings, all saved by one Save bar.
 async function renderPlan(paperId, sid) {
   const oldSnap = sid ? await getDoc(doc(c.db, 'sessions', sid)) : null;
-  if (sid && !oldSnap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/sessions">Sessions</a></p></section>')); return; }
+  if (sid && !oldSnap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
   const old = oldSnap ? oldSnap.data() : null;
   if (old && !mayPlanSession(old)) {
     c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who planned this session, its presenter, its coordinator or an admin can change it.</p><p><a href="#/session/${c.esc(sid)}">Back to the session</a></p></section>`));
     return;
   }
-  const [ps, ss, club] = await Promise.all([getDocs(collection(c.db, 'papers')), getDocs(collection(c.db, 'sessions')), loadClub()]);
-  const papers = ps.docs.map((d) => cleanPaper({ id: d.id, ...d.data() }))
-    .map((p) => ({ id: p.id, title: p.title, hay: `${p.title} ${p.authors.join(' ')} ${p.year || ''}`.toLowerCase() }));
+  // The library's cached catalogue (src/catalogue.js), not a fresh read of every paper.
+  const [lib, ss, club] = await Promise.all([loadLibrary(c.db), getDocs(collection(c.db, 'sessions')), loadClub()]);
+  const papers = [...lib.papers].map(([id, p]) => ({ id, title: p.title, hay: `${p.title} ${(p.authors || []).join(' ')} ${p.year || ''}`.toLowerCase() }));
   // Names for the pickers: people on earlier sessions, plus the whole member list for admins (members can't list it).
   const people = new Map();
   const note = (name, uid) => { if (name && (uid || !people.has(name))) people.set(name, uid || ''); };
@@ -183,7 +177,7 @@ async function renderPlan(paperId, sid) {
   const findUid = personIndex(linked);
   let warned = '';
 
-  const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'sessions'}">← ${sid ? 'Back to the session' : 'Sessions'}</a></p>
+  const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'home'}">← ${sid ? 'Back to the session' : 'Club'}</a></p>
     <h1>${sid ? 'Edit session' : 'Plan a session'}</h1>
     <form id="pf" class="stack">${sid ? '<h2>Plan</h2>' : ''}
       <label>Date <input id="sdate" type="date" required></label><p id="sclash" class="muted"></p>
@@ -363,7 +357,7 @@ async function deleteSession(snap) {
   await setPresented(b, s.paperId, snap.id, null);
   await b.commit();
   dirtyLibrary();
-  location.hash = '#/sessions';
+  location.hash = '#/home';
 }
 
 const sessionUrl = (sid) => `${location.origin}/#/point/${sid}`;
@@ -371,7 +365,7 @@ const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); r
 
 async function renderSession(sid) {
   const snap = await getDoc(doc(c.db, 'sessions', sid));
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/sessions">Sessions</a></p></section>')); return; }
+  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
   const s = { id: sid, ...snap.data() };
   const [club, template, pts] = await Promise.all([loadClub(), loadTemplate(), getDocs(collection(c.db, 'sessions', sid, 'points'))]);
   const points = pts.docs.map((d) => d.data());
@@ -382,7 +376,7 @@ async function renderSession(sid) {
     ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
        <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
     : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
-  const page = c.el(`<section class="card"><p><a href="#/sessions">← Sessions</a></p>
+  const page = c.el(`<section class="card"><p><a href="#/home">← Club</a></p>
     <h1>${c.esc(fmtDate(s.date))}</h1>
     <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(decodeEntities(s.paperTitle))}</a></p>
     <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
@@ -502,7 +496,7 @@ function adminSessionTools(snap, s, template, done, section) {
 // One-box form: each member gets one take-home point per session and can edit it.
 async function renderPoint(sid) {
   const [snap, club] = await Promise.all([getDoc(doc(c.db, 'sessions', sid)), loadClub()]);
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/sessions">Sessions</a></p></section>')); return; }
+  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
   const s = snap.data();
   const ref = doc(c.db, 'sessions', sid, 'points', c.user.uid);
   const mine = await getDoc(ref);

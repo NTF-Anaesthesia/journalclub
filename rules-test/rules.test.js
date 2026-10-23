@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp, query, where } from 'firebase/firestore';
 
 let env;
 const HOUR = 3600 * 1000;
@@ -151,6 +151,11 @@ test('only the adder or an admin edits a paper, and only tags, why and file', as
   await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'papers/p1'), { why: 'admin edit' }));
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
   await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { why: 'not mine' }));
+  // Any member tags any paper (bulk Add to… in select mode), tags only, up to 20.
+  await assertSucceeds(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: ['icu', 'exam'], changedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: ['x'], why: 'sneaky' }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { file: null }));
   // Old PDF text: no new writes; members read it (for the admin backfill); the adder or an admin deletes it.
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'texts/p1'), { pages: ['page one'] }));
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'texts/p1'), { pages: ['page one'] }));
@@ -170,20 +175,72 @@ test('one note and rating per member, written only by that member', async () => 
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), note(9)));
   await assertSucceeds(getDocs(collectionGroup(as('admin1', 'a@x.org'), 'notes')));
   await assertFails(getDocs(collectionGroup(as('nobody', 'n@x.org'), 'notes')));
+  // Merging duplicates: an admin moves a member's note (its own updatedAt kept) and clears the old one.
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1'), { text: 'moved', rating: 3, name: 'M', updatedAt: Timestamp.fromMillis(Date.now() - HOUR) }));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1'), { text: 'moved', rating: 3, extra: 1, updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), { text: 'old stamp', rating: 1, updatedAt: Timestamp.fromMillis(0) }));
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1')));
 });
 
-test('reading lists: members create; only the maker or an admin edits', async () => {
-  const list = (uid) => ({ name: 'Part 1 exam', about: '', paperIds: [], createdBy: uid, createdAt: serverTimestamp() });
-  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), list('mem1')));
-  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'lists/l2'), list('admin1')));
-  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'lists/l3'), list('nobody')));
-  await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), { paperIds: ['p1'] }));
-  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), { createdBy: 'admin1' }));
-  await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'lists/l1'), { name: 'Renamed' }));
+test('reading lists: private for the maker only; shared lists take any member\'s papers; maker or admin renames and deletes', async () => {
+  const list = (uid, visibility = 'shared') => ({ name: 'Part 1 exam', about: '', paperIds: [], createdBy: uid, createdAt: serverTimestamp(), visibility });
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
-  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'lists/l1'), { paperIds: [] }));
-  await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'lists/l1')));
-  await assertSucceeds(deleteDoc(doc(as('mem1', 'm@x.org'), 'lists/l1')));
+  const m1 = as('mem1', 'm@x.org'), m2 = as('mem2', 'm2@x.org'), ad = as('admin1', 'a@x.org');
+  await assertSucceeds(setDoc(doc(m1, 'lists/l1'), list('mem1')));
+  await assertSucceeds(setDoc(doc(m1, 'lists/p1'), list('mem1', 'private')));
+  await assertFails(setDoc(doc(m1, 'lists/l2'), list('admin1')));
+  await assertFails(setDoc(doc(m1, 'lists/l4'), list('mem1', 'secret')));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'lists/l3'), list('nobody')));
+  // Private: only the maker (and admins, for merging duplicates) read it, by id or in a query.
+  await assertFails(getDoc(doc(m2, 'lists/p1')));
+  await assertFails(updateDoc(doc(m2, 'lists/p1'), { paperIds: ['x'] }));
+  await assertSucceeds(getDoc(doc(m1, 'lists/p1')));
+  await assertSucceeds(getDoc(doc(ad, 'lists/p1')));
+  await assertFails(getDocs(collection(m2, 'lists')));
+  await assertSucceeds(getDocs(query(collection(m2, 'lists'), where('visibility', '==', 'shared'))));
+  await assertSucceeds(getDocs(query(collection(m2, 'lists'), where('createdBy', '==', 'mem2'))));
+  await assertFails(getDocs(query(collection(m2, 'lists'), where('createdBy', '==', 'mem1'))));
+  await assertSucceeds(getDocs(collection(ad, 'lists')));
+  // Shared: any member adds or removes papers, nothing else.
+  await assertSucceeds(updateDoc(doc(m2, 'lists/l1'), { paperIds: ['p1', 'p2'] }));
+  await assertFails(updateDoc(doc(m2, 'lists/l1'), { name: 'Mine now' }));
+  await assertFails(updateDoc(doc(m2, 'lists/l1'), { visibility: 'private' }));
+  await assertFails(deleteDoc(doc(m2, 'lists/l1')));
+  await assertSucceeds(updateDoc(doc(m1, 'lists/l1'), { paperIds: ['p1'], name: 'Renamed', visibility: 'private' }));
+  await assertFails(updateDoc(doc(m1, 'lists/l1'), { createdBy: 'admin1' }));
+  await assertSucceeds(updateDoc(doc(ad, 'lists/l1'), { name: 'Admin renamed' }));
+  await assertSucceeds(deleteDoc(doc(m1, 'lists/l1')));
+  // A list from before visibility existed is shared until an admin stamps it.
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'lists/old'), { name: 'Old', about: '', paperIds: [], createdBy: 'admin1', createdAt: new Date() }));
+  await assertSucceeds(getDoc(doc(m2, 'lists/old')));
+  await assertSucceeds(updateDoc(doc(m2, 'lists/old'), { paperIds: ['p9'] }));
+  await assertFails(updateDoc(doc(m2, 'lists/old'), { visibility: 'shared' }));
+  await assertSucceeds(updateDoc(doc(ad, 'lists/old'), { visibility: 'shared' }));
+});
+
+test('Starred list: star-<own uid>, private, kind starred; nobody else reads it', async () => {
+  const star = (uid, extra = {}) => ({ name: 'Starred', about: '', paperIds: ['p1'], createdBy: uid, createdAt: serverTimestamp(), visibility: 'private', kind: 'starred', ...extra });
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  const m1 = as('mem1', 'm@x.org'), m2 = as('mem2', 'm2@x.org');
+  assert.equal((await assertSucceeds(getDoc(doc(m1, 'lists/star-mem1')))).exists(), false);
+  await assertSucceeds(setDoc(doc(m1, 'lists/star-mem1'), star('mem1')));
+  await assertFails(setDoc(doc(m2, 'lists/star-mem1'), star('mem2')));
+  await assertFails(setDoc(doc(m2, 'lists/star-mem2'), star('mem2', { visibility: 'shared' })));
+  await assertFails(setDoc(doc(m2, 'lists/other'), star('mem2')));
+  await assertFails(getDoc(doc(m2, 'lists/star-mem1')));
+  await assertSucceeds(updateDoc(doc(m1, 'lists/star-mem1'), { paperIds: ['p1', 'p2'] }));
+  await assertFails(updateDoc(doc(m1, 'lists/star-mem1'), { visibility: 'shared' }));
+});
+
+test('prefs: users/<uid> holds the last 20 papers opened, own doc only', async () => {
+  const m1 = as('mem1', 'm@x.org');
+  await assertSucceeds(setDoc(doc(m1, 'users/mem1'), { recent: ['p1', 'p2'], updatedAt: serverTimestamp() }));
+  await assertSucceeds(getDoc(doc(m1, 'users/mem1')));
+  await assertFails(getDoc(doc(as('admin1', 'a@x.org'), 'users/mem1')));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'users/mem1'), { recent: [], updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { recent: Array.from({ length: 21 }, (_, i) => `p${i}`), updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { recent: [], starred: ['x'], updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'users/nobody'), { recent: [], updatedAt: serverTimestamp() }));
 });
 
 test('votes and the rota are gone: every path is denied', async () => {

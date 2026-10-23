@@ -74,15 +74,14 @@ function render() {
   return renderLibraryRoute({ name: 'library' }, ctx);
 }
 
-// Bottom tab bar (members only; search is the default page, club home is #/home) and the top bar: its title fades in once the page's large title scrolls away.
+// Bottom tab bar (members only; search is the default page, club home is #/home, also #/sessions) and the top bar: its title fades in once the page's large title scrolls away.
 const TABS = [
-  ['', 'Library', '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'],
-  ['home', 'Club', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
-  ['lists', 'Saved', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
-  ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
+  ['', 'Library', '<path d="M5 4h3v16H5zM10 4h3v16h-3z"/><path d="m15.5 4.8 2.9-.8 3.6 15.4-2.9.8z"/>'],
+  ['lists', 'Saved', '<path d="M6 4h12v16l-6-4-6 4z"/>'],
+  ['home', 'Club', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c.8-3.6 3.2-5.5 6-5.5s5.2 1.9 6 5.5"/><circle cx="16.5" cy="9" r="2.6"/><path d="M16 14.6c2.6 0 4.4 1.7 5 5.4"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', home: 'home', lists: 'lists', list: 'lists',
-  sessions: 'sessions', session: 'sessions', point: 'sessions', plan: 'sessions' };
+const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', reindex: '', duplicates: '', lists: 'lists', list: 'lists',
+  home: 'home', sessions: 'home', session: 'home', point: 'home', plan: 'home' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
 function renderBar() {
