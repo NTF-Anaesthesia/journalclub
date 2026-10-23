@@ -148,6 +148,7 @@ test('member: sort by year, star on one device and see it in Saved on another, f
   await expect(sheetB.getByText('Journal club picks')).toHaveCount(0);
   await sheetB.getByLabel('Find or create a list or tag').fill('Exam prep');
   await sheetB.getByRole('button', { name: '+ New private list “Exam prep”' }).click();
+  await expect(sheetB.getByRole('checkbox', { name: /Exam prep/ })).toBeChecked(); // the list exists before Save
   await sheetB.getByRole('button', { name: 'Save' }).click();
   await expect(b.getByText('In Starred, Exam prep')).toBeVisible();
   await open(b, 'lists');
