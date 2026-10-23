@@ -6,6 +6,7 @@ import {
 } from 'firebase/firestore';
 import { searchPapers, mergeHits } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
+import { tidyAtotw } from './atotw.js';
 import { abstractSections, cleanPaper } from './abstract.js';
 import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
@@ -87,7 +88,7 @@ function showTag(t) {
 
 // Row: title, authors, journal and year, then pills (PDF opens the reader, Presented, tags filter the library).
 function paperItem(id, p, page, snippet) {
-  const meta = [p.journal, p.year].filter(Boolean).join(' ');
+  const meta = [p.journal, p.year, p.atotw && `No. ${p.atotw}`].filter(Boolean).join(' ');
   const tags = (p.tags || []).map((t) => `<a class="tag" href="#/library" data-tag="${c.esc(t)}">${c.esc(t)}</a>`).join('');
   const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
   const pdf = p.file ? `<a class="pdf-pill" href="#/read/${c.esc(id)}" aria-label="Open the PDF">${PDF_ICON}PDF</a>` : '';
@@ -343,6 +344,7 @@ async function renderSearch() {
     out.push(btn('more', 'More', () => moreSheet(c, ids, {
       reindex: () => reindexSelected(c, ids, after, pick),
       fill: () => fillSelected(c, ids, after, pick),
+      tidy: () => tidyAtotw(c, ids, after),
       remove: () => removeSelected(c, ids, () => { ids.forEach((id) => sel?.delete(id)); after(); }),
     })));
     selbar.style.gridTemplateColumns = `repeat(${out.length}, minmax(0, 1fr))`;
@@ -549,7 +551,7 @@ async function renderPaper(id, hitPage) {
     p.doi && `<a href="${NUS_PROXY}${encodeURIComponent('https://doi.org/' + p.doi)}" target="_blank" rel="noopener">Via NUS Libraries</a>`,
     p.pmid && `<a href="https://pubmed.ncbi.nlm.nih.gov/${c.esc(p.pmid)}/" target="_blank" rel="noopener">PubMed</a>`,
   ].filter(Boolean).join(' · ');
-  const meta = [p.journal, p.year].filter(Boolean).map(c.esc).join(' · ');
+  const meta = [p.journal, p.year, p.atotw && `No. ${p.atotw}`].filter(Boolean).map(c.esc).join(' · ');
   const doiLink = p.doi ? `<a href="https://doi.org/${c.esc(p.doi)}" target="_blank" rel="noopener">DOI</a>` : '';
   const page = c.el(`<section class="card paperpage"><p class="eyebrow">PAPER</p><p class="back"><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted meta">${[meta, doiLink].filter(Boolean).join(' · ')}</p>

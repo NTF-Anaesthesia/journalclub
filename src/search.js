@@ -5,7 +5,7 @@ import { decodeEntities } from './abstract.js';
 // PDF pages and notes are searched by the Worker (GET /api/search); mergeHits joins the two.
 export function buildIndex(papers) {
   const ms = new MiniSearch({
-    fields: ['title', 'authors', 'journal', 'tags', 'why', 'abstract'],
+    fields: ['title', 'authors', 'journal', 'tags', 'why', 'abstract', 'atotw'],
     storeFields: [],
     searchOptions: { prefix: true, fuzzy: 0.2, combineWith: 'AND', boost: { title: 3, tags: 2, why: 1.5 } },
   });
@@ -15,7 +15,7 @@ export function buildIndex(papers) {
 
 const indexDoc = (id, p) => ({
   id, title: p.title, authors: (p.authors || []).join(' '), journal: p.journal, tags: (p.tags || []).join(' '),
-  why: p.why, abstract: decodeEntities(p.abstract),
+  why: p.why, abstract: decodeEntities(p.abstract), atotw: p.atotw ? `ATOTW ${p.atotw} No. ${p.atotw}` : '',
 });
 
 // Keeps the index in step with a changed or removed paper without rebuilding it.

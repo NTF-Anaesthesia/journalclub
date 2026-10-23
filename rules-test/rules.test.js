@@ -133,6 +133,21 @@ test('admin refresh may rewrite bibliographic fields only; members and other fie
   await assertFails(updateDoc(m, { addedBy: 'admin1', title: 'N' }));
 });
 
+test('Tidy ATOTW: only admins write the tutorial number (int 1-2000) with title, journal, year and manual', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'papers/t1'), { ...newPaper('mem1'), addedAt: new Date(), year: null }));
+  const a = doc(as('admin1', 'a@x.org'), 'papers/t1'), m = doc(as('mem1', 'm@x.org'), 'papers/t1');
+  await assertSucceeds(updateDoc(a, { title: 'The Shoulder Block', journal: 'Anaesthesia Tutorial of the Week', year: 2013, atotw: 453,
+    manual: ['title', 'journal', 'year'], changedAt: serverTimestamp() }));
+  await assertFails(updateDoc(a, { atotw: 0 }));
+  await assertFails(updateDoc(a, { atotw: 2001 }));
+  await assertFails(updateDoc(a, { atotw: '453' }));
+  await assertFails(updateDoc(a, { atotw: 5, addedBy: 'admin1' }));
+  await assertFails(updateDoc(a, { atotw: 5, tags: ['x'] }));
+  await assertFails(updateDoc(m, { atotw: 7 })); // the adder is a member: no
+  await assertFails(updateDoc(m, { atotw: 7, title: 'T', manual: ['title'] }));
+  await assertFails(updateDoc(doc(as('nobody', 'n@x.org'), 'papers/t1'), { atotw: 7 }));
+});
+
 test('any member edits a paper\'s details by hand; fields are checked when they change; nothing else', async () => {
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'papers/e1'), { ...newPaper('admin1'), addedAt: new Date(), year: null }));
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
