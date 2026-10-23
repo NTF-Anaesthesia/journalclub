@@ -201,3 +201,71 @@ test('sessions: admins plan; the presenter edits only summary and slides', async
   await assertFails(deleteDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1')));
   await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'sessions/s1')));
 });
+
+// --- S4: group invites and removal flags ---
+const seedGroup = (id = 'grp', expiresAt = future()) => env.withSecurityRulesDisabled((ctx) =>
+  setDoc(doc(ctx.firestore(), 'invites', id), { createdBy: 'admin1', createdAt: new Date(), expiresAt, used: false, group: true, note: 'residents' }));
+const joinGroup = (db, uid, email, token) =>
+  setDoc(doc(db, 'members', uid), { email, name: 'New', role: 'member', inviteId: token, joinedAt: serverTimestamp() });
+
+test('a group invite admits many people and is never consumed', async () => {
+  await seedGroup();
+  await assertSucceeds(joinGroup(as('g1', 'g1@x.org'), 'g1', 'g1@x.org', 'grp'));
+  await assertSucceeds(joinGroup(as('g2', 'g2@x.org'), 'g2', 'g2@x.org', 'grp'));
+  let used;
+  await env.withSecurityRulesDisabled(async (ctx) => { used = (await getDoc(doc(ctx.firestore(), 'invites/grp'))).data().used; });
+  assert.equal(used, false);
+});
+
+test('a group invite cannot be consumed as a single-use invite', async () => {
+  await seedGroup();
+  await assertFails(redeem(as('g3', 'g3@x.org'), 'g3', 'g3@x.org', 'grp'));
+  await assertFails(updateDoc(doc(as('g3', 'g3@x.org'), 'invites/grp'), { used: true, usedBy: 'g3', usedAt: serverTimestamp() }));
+});
+
+test('expired, revoked or forged group invites admit nobody', async () => {
+  await seedGroup('grpold', past());
+  await assertFails(joinGroup(as('g4', 'g4@x.org'), 'g4', 'g4@x.org', 'grpold'));
+  await assertFails(joinGroup(as('g5', 'g5@x.org'), 'g5', 'g5@x.org', 'revoked'));
+  await seedGroup();
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'invites/grp')));
+  await assertFails(joinGroup(as('g6', 'g6@x.org'), 'g6', 'g6@x.org', 'grp'));
+  // a plain single-use invite is not a group invite just because someone skips the batch
+  await assertFails(joinGroup(as('g7', 'g7@x.org'), 'g7', 'g7@x.org', 'good'));
+});
+
+test('group join cannot make an admin or use another person\'s email', async () => {
+  await seedGroup();
+  await assertFails(setDoc(doc(as('g8', 'g8@x.org'), 'members/g8'), { email: 'g8@x.org', name: 'x', role: 'admin', inviteId: 'grp', joinedAt: serverTimestamp() }));
+  await assertFails(joinGroup(as('g9', 'g9@x.org'), 'g9', 'other@x.org', 'grp'));
+  await assertFails(joinGroup(stranger(), 'g10', 'g10@x.org', 'grp'));
+});
+
+test('only admins create group invites, within 30 days', async () => {
+  const g = (uid, ms) => ({ createdBy: uid, createdAt: serverTimestamp(), expiresAt: future(ms), used: false, group: true, note: 'n' });
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'invites/g-ok'), g('admin1', 7 * 24 * HOUR)));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'invites/g-no'), g('mem1', 7 * 24 * HOUR)));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'invites/g-long'), g('admin1', 60 * 24 * HOUR)));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'invites/g-str'), { ...g('admin1', HOUR), group: 'yes' }));
+});
+
+const flag = (uid, extra = {}) => ({ paperId: 'p1', paperTitle: 'A trial', what: 'pdf', reason: 'Copyright', by: uid, byName: 'M', at: serverTimestamp(), ...extra });
+
+test('any member flags a paper as themselves; only admins read or dismiss flags', async () => {
+  await setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1'));
+  const m = as('mem1', 'm@x.org');
+  await assertSucceeds(setDoc(doc(m, 'flags/f1'), flag('mem1')));
+  await assertSucceeds(setDoc(doc(m, 'flags/f2'), flag('mem1', { what: 'paper' })));
+  await assertFails(setDoc(doc(m, 'flags/f3'), flag('admin1')));
+  await assertFails(setDoc(doc(m, 'flags/f4'), flag('mem1', { what: 'everything' })));
+  await assertFails(setDoc(doc(m, 'flags/f5'), flag('mem1', { reason: '' })));
+  await assertFails(setDoc(doc(m, 'flags/f6'), flag('mem1', { reason: 'x'.repeat(501) })));
+  await assertFails(setDoc(doc(m, 'flags/f7'), flag('mem1', { paperId: 'nope' })));
+  await assertFails(setDoc(doc(m, 'flags/f8'), flag('mem1', { extra: 1 })));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'flags/f9'), flag('nobody')));
+  await assertFails(getDoc(doc(m, 'flags/f1')));
+  await assertFails(getDocs(collection(m, 'flags')));
+  await assertFails(deleteDoc(doc(m, 'flags/f1')));
+  await assertSucceeds(getDocs(collection(as('admin1', 'a@x.org'), 'flags')));
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'flags/f1')));
+});

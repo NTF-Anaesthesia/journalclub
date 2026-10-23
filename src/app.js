@@ -79,7 +79,7 @@ const TABS = [
   ['vote', 'Vote', '<path d="M7 11V20H4v-9zM7 11l4-7c1.5 0 2.5 1 2.2 2.6L12.6 10H18a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'],
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', home: 'home', lists: 'lists', list: 'lists',
+const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', home: 'home', lists: 'lists', list: 'lists',
   vote: 'vote', sessions: 'sessions', session: 'sessions', rota: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
@@ -163,7 +163,8 @@ async function renderJoin(token) {
   let inv;
   try { inv = await getDoc(doc(db, 'invites', token)); } catch { inv = null; }
   const data = inv?.exists() ? inv.data() : null;
-  if (!data || data.used || data.expiresAt.toMillis() <= Date.now()) {
+  const group = data?.group === true;
+  if (!data || (!group && data.used) || data.expiresAt.toMillis() <= Date.now()) {
     msg.textContent = 'This invite link is not valid any more (used, expired or mistyped). Ask for a new one.';
     return;
   }
@@ -173,7 +174,7 @@ async function renderJoin(token) {
     btn.disabled = true;
     try {
       const b = writeBatch(db);
-      b.update(doc(db, 'invites', token), { used: true, usedBy: user.uid, usedAt: serverTimestamp() });
+      if (!group) b.update(doc(db, 'invites', token), { used: true, usedBy: user.uid, usedAt: serverTimestamp() });
       b.set(doc(db, 'members', user.uid), {
         email: user.email, name: user.displayName || '', role: 'member', inviteId: token, joinedAt: serverTimestamp(),
       });
@@ -199,17 +200,34 @@ async function renderAdmin() {
     <h2>Invite someone</h2>
     <form id="inv"><input id="note" placeholder="Note (who it is for)" maxlength="80">
       <select id="days"><option value="1">1 day</option><option value="7" selected>7 days</option><option value="30">30 days</option></select>
-      <button class="primary">Create invite link</button></form>
+      <button class="primary" id="mk1">Create invite link</button>
+      <button type="button" id="mkgrp">Create group link</button></form>
+    <p class="muted">A single-use link admits one person. A group link admits anyone who signs in with it before it expires.</p>
     <p id="newlink" class="muted"></p>
+    <h2>Removal flags</h2><ul id="flags" class="list"></ul>
     <h2>Open invites</h2><ul id="invites" class="list"></ul>
     <h2>Members</h2><ul id="members" class="list"></ul></section>`);
   view.replaceChildren(page);
 
   async function refresh() {
-    const [ms, is] = await Promise.all([
+    const [ms, is, fs] = await Promise.all([
       getDocs(collection(db, 'members')),
       getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'))),
+      getDocs(query(collection(db, 'flags'), orderBy('at', 'desc'))),
     ]);
+    const joinedVia = new Map();
+    ms.forEach((d) => { const m = d.data(); joinedVia.set(m.inviteId, [...(joinedVia.get(m.inviteId) || []), m.name || m.email]); });
+    const fl = page.querySelector('#flags'); fl.replaceChildren();
+    if (fs.empty) fl.append(el('<li class="muted">No open flags.</li>'));
+    fs.forEach((d) => {
+      const f = d.data();
+      const li = el(`<li><span><a href="#/paper/${esc(f.paperId)}">${esc(f.paperTitle)}</a> <span class="muted">${f.what === 'pdf' ? 'PDF' : 'whole paper'} · ${esc(f.byName)}</span><br>${esc(f.reason)}</span></li>`);
+      const rm = el('<button class="link danger">Remove</button>');
+      rm.onclick = () => { location.hash = `#/remove/${f.paperId}`; };
+      const dm = el('<button class="link">Dismiss</button>');
+      dm.onclick = async () => { await deleteDoc(d.ref); refresh(); };
+      li.append(rm, dm); fl.append(li);
+    });
     const ml = page.querySelector('#members'); ml.replaceChildren();
     ms.forEach((d) => {
       const m = d.data();
@@ -228,7 +246,8 @@ async function renderAdmin() {
       const i = d.data();
       if (i.used) return;
       const exp = i.expiresAt.toDate();
-      const li = el(`<li><span>${esc(i.note || '(no note)')} <span class="muted">expires ${exp.toLocaleDateString()}${exp < new Date() ? ' (expired)' : ''}</span></span></li>`);
+      const who = i.group ? joinedVia.get(d.id) || [] : [];
+      const li = el(`<li><span>${i.group ? '<strong>Group</strong> ' : ''}${esc(i.note || '(no note)')} <span class="muted">expires ${exp.toLocaleDateString()}${exp < new Date() ? ' (expired)' : ''}</span>${i.group ? `<br><span class="muted">Joined: ${who.length ? esc(who.join(', ')) : 'nobody yet'}</span>` : ''}</span></li>`);
       const cp = el('<button class="link">Copy link</button>');
       cp.onclick = () => navigator.clipboard?.writeText(`${location.origin}/#/join/${d.id}`);
       const rv = el('<button class="link danger">Revoke</button>');
@@ -237,20 +256,21 @@ async function renderAdmin() {
     });
   }
 
-  page.querySelector('#inv').onsubmit = async (e) => {
-    e.preventDefault();
+  async function makeInvite(group) {
     const token = newToken();
     const days = Number(page.querySelector('#days').value);
     await setDoc(doc(db, 'invites', token), {
       createdBy: user.uid, createdAt: serverTimestamp(), used: false,
       expiresAt: Timestamp.fromMillis(Date.now() + days * 86400000),
-      note: page.querySelector('#note').value.trim(),
+      note: page.querySelector('#note').value.trim(), ...(group ? { group: true } : {}),
     });
     const link = `${location.origin}/#/join/${token}`;
-    page.querySelector('#newlink').innerHTML = `One-time link: <code id="linktext">${esc(link)}</code>`;
+    page.querySelector('#newlink').innerHTML = `${group ? 'Group link' : 'One-time link'}: <code id="linktext">${esc(link)}</code>`;
     page.querySelector('#note').value = '';
     refresh();
-  };
+  }
+  page.querySelector('#inv').onsubmit = (e) => { e.preventDefault(); makeInvite(false); };
+  page.querySelector('#mkgrp').onclick = () => makeInvite(true);
   refresh();
 }
 

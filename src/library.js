@@ -6,7 +6,7 @@ import {
 import { buildIndex, searchPapers } from './search.js';
 import { findDoi } from './doi.js';
 
-export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'lists', 'list'];
+export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
@@ -42,6 +42,7 @@ export function renderLibraryRoute(r, ctx) {
   if (r.name === 'add') return renderAdd();
   if (r.name === 'import') return renderImport();
   if (r.name === 'paper' && r.arg) return renderPaper(r.arg, Number(r.arg2) || null);
+  if (r.name === 'remove' && r.arg) return renderRemove(r.arg);
   if (r.name === 'lists') return renderLists();
   if (r.name === 'list' && r.arg) return renderList(r.arg);
   return renderSearch();
@@ -256,17 +257,6 @@ async function renderPaper(id, hitPage) {
     const open = c.el(`<button class="primary">Open PDF${hitPage ? ` at page ${hitPage}` : ''}</button>`);
     open.onclick = () => openPdf(id, hitPage);
     file.append(open, c.el(`<span class="muted"> ${p.file.pages} pages</span>`));
-    if (mayEdit(p)) {
-      const rm = c.el('<button class="link danger">Remove PDF</button>');
-      rm.onclick = async () => {
-        if (!confirm('Remove the stored PDF?')) return;
-        await apiFetch(`/api/file/${id}`, { method: 'DELETE' });
-        await deleteDoc(doc(c.db, 'texts', id));
-        await updateDoc(doc(c.db, 'papers', id), { file: null });
-        dirty(); renderPaper(id, null);
-      };
-      file.append(rm);
-    }
   } else if (mayEdit(p)) {
     const up = c.el(`<form id="uf" class="stack">
       <input type="file" id="pdf" accept="application/pdf" aria-label="PDF file">
@@ -317,11 +307,12 @@ async function renderPaper(id, hitPage) {
     location.hash = `#/list/${sel.value}`;
   };
 
-  // Tags, why, delete: the adder or an admin.
+  // Tags and why: the adder or an admin, who also get a link to the separate removal page.
   if (mayEdit(p)) {
-    const ed = c.el(`<details><summary>Edit or delete</summary><form id="ef" class="stack">
+    const ed = c.el(`<details><summary>Edit</summary><form id="ef" class="stack">
       <label>Tags <input id="etags"></label><label>Why read it <input id="ewhy" maxlength="200"></label>
-      <button class="primary">Save</button></form><button id="del" class="link danger">Delete paper</button></details>`);
+      <button class="primary">Save</button></form>
+      <p class="muted"><a href="#/remove/${c.esc(id)}">Remove this paper or its PDF…</a></p></details>`);
     $in(ed, '#etags').value = (p.tags || []).join(', ');
     $in(ed, '#ewhy').value = p.why || '';
     $in(ed, '#ef').onsubmit = async (e) => {
@@ -329,14 +320,73 @@ async function renderPaper(id, hitPage) {
       await updateDoc(doc(c.db, 'papers', id), { tags: tagList($in(ed, '#etags').value), why: $in(ed, '#ewhy').value.trim() });
       dirty(); renderPaper(id, hitPage);
     };
-    $in(ed, '#del').onclick = async () => {
-      if (!confirm('Delete this paper from the library?')) return;
-      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)); }
-      await deleteDoc(doc(c.db, 'papers', id));
-      dirty(); location.hash = '#/library';
-    };
     $in(page, '#edit').append(ed);
   }
+
+  // Any member can flag the PDF or the whole paper for an admin to review.
+  const fl = c.el(`<details id="flagbox"><summary>Flag for removal</summary><form id="ff" class="stack">
+    <label>What <select id="fwhat">${p.file ? '<option value="pdf">The PDF</option>' : ''}<option value="paper">The whole paper</option></select></label>
+    <label>Reason <textarea id="freason" rows="2" maxlength="500" required></textarea></label>
+    <button class="primary">Send flag</button><p id="fmsg" class="muted"></p></form></details>`);
+  $in(fl, '#ff').onsubmit = async (e) => {
+    e.preventDefault();
+    const reason = $in(fl, '#freason').value.trim();
+    if (!reason) return;
+    try {
+      await addDoc(collection(c.db, 'flags'), {
+        paperId: id, paperTitle: p.title, what: $in(fl, '#fwhat').value, reason,
+        by: c.user.uid, byName: c.member.name || c.user.displayName || c.user.email, at: serverTimestamp(),
+      });
+      $in(fl, '#ff').replaceChildren(c.el('<p>Thanks. An admin will review it.</p>'));
+    } catch { $in(fl, '#fmsg').textContent = 'Could not send the flag.'; }
+  };
+  $in(page, '#edit').append(fl);
+}
+
+// Separate removal page: the adder or an admin removes the PDF, or the paper after typing its title.
+async function renderRemove(id) {
+  const snap = await getDoc(doc(c.db, 'papers', id));
+  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
+  const p = snap.data();
+  if (!mayEdit(p)) { c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who added this paper, or an admin, can remove it.</p><p><a href="#/paper/${c.esc(id)}">Back to the paper</a></p></section>`)); return; }
+  const page = c.el(`<section class="card"><p><a href="#/paper/${c.esc(id)}">← Back to the paper</a></p><h1>Remove</h1>
+    <p><strong>${c.esc(p.title)}</strong></p>
+    ${p.file ? '<h2>Remove the PDF only</h2><p class="muted">The paper stays in the library; the stored file and its search text go.</p><button id="rpdf" class="danger-btn">Remove PDF</button>' : ''}
+    <h2>Remove the whole paper</h2>
+    <p class="muted">This also removes its PDF. Notes, ratings and votes on it are no longer reachable. Type the title to confirm.</p>
+    <form id="rf" class="stack"><label>Title <input id="rtitle" autocomplete="off" aria-label="Type the paper title"></label>
+      <button id="rpaper" class="danger-btn" disabled>Remove paper</button></form><p id="rmsg" class="muted"></p></section>`);
+  c.view.replaceChildren(page);
+  const msg = $in(page, '#rmsg');
+  const clearFlags = async () => {
+    if (c.member.role !== 'admin') return;
+    const fs = await getDocs(query(collection(c.db, 'flags'), where('paperId', '==', id)));
+    await Promise.all(fs.docs.map((d) => deleteDoc(d.ref)));
+  };
+  const norm = (t) => t.trim().replace(/\s+/g, ' ').toLowerCase();
+  $in(page, '#rtitle').oninput = () => { $in(page, '#rpaper').disabled = norm($in(page, '#rtitle').value) !== norm(p.title); };
+  if (p.file) {
+    $in(page, '#rpdf').onclick = async () => {
+      if (!confirm('Remove the stored PDF?')) return;
+      try {
+        await apiFetch(`/api/file/${id}`, { method: 'DELETE' });
+        await deleteDoc(doc(c.db, 'texts', id));
+        await updateDoc(doc(c.db, 'papers', id), { file: null });
+        await clearFlags();
+        dirty(); location.hash = `#/paper/${id}`;
+      } catch { msg.textContent = 'Could not remove the PDF.'; }
+    };
+  }
+  $in(page, '#rf').onsubmit = async (e) => {
+    e.preventDefault();
+    if (norm($in(page, '#rtitle').value) !== norm(p.title)) return;
+    try {
+      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)); }
+      await deleteDoc(doc(c.db, 'papers', id));
+      await clearFlags().catch(() => {});
+      dirty(); location.hash = '#/library';
+    } catch { msg.textContent = 'Could not remove the paper.'; }
+  };
 }
 
 async function renderLists() {
