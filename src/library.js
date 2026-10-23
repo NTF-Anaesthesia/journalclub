@@ -26,7 +26,6 @@ const SORT_KEY = 'jc.sort';
 const savedSort = () => { try { const v = localStorage.getItem(SORT_KEY); return SORTS.some(([k]) => k === v) ? v : 'discussed'; } catch { return 'discussed'; } };
 const ui = { q: '', filter: emptyFilter(), sort: savedSort(), shown: PAGE, pendingSel: null };
 const ABSTRACT_NOTE = {
-  ai: 'Written by an AI from the PDF text, not by the authors. Check it against the paper.',
   pdf: 'Taken from the PDF’s own abstract or summary.',
 };
 const AUTHORS_KEY = 'jc.showAuthors';
@@ -540,7 +539,7 @@ async function renderPaper(id, hitPage) {
   const page = c.el(`<section class="card paperpage"><p class="eyebrow">PAPER</p><p class="back"><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted meta">${[meta, doiLink].filter(Boolean).join(' · ')}</p>
     ${(p.tags || []).length ? `<p class="tagrow">${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>` : ''}
-    ${p.abstract ? `<div class="abstract-open"><h2>${p.abstractSource === 'ai' ? 'AI summary' : 'Abstract'}</h2>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
+    ${p.abstract ? `<div class="abstract-open"><h2>Abstract</h2>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
       .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></div>` : ''}
     <p class="actions compact"><button type="button" id="star" class="star-btn"></button><button type="button" id="addto">Lists and tags…</button><button type="button" id="editd">Edit details</button></p>
     <p class="muted" id="inlists"></p>
