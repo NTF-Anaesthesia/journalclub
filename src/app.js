@@ -73,14 +73,13 @@ function render() {
 
 // Bottom tab bar (members only; search is the default page, club home is #/home) and the top bar: its title fades in once the page's large title scrolls away.
 const TABS = [
-  ['', 'Search', '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'],
+  ['', 'Library', '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'],
   ['home', 'Club', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
-  ['lists', 'Lists', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
-  ['vote', 'Vote', '<path d="M7 11V20H4v-9zM7 11l4-7c1.5 0 2.5 1 2.2 2.6L12.6 10H18a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'],
+  ['lists', 'Saved', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
 const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', home: 'home', lists: 'lists', list: 'lists',
-  vote: 'vote', sessions: 'sessions', session: 'sessions', point: 'sessions', rota: 'sessions' };
+  sessions: 'sessions', session: 'sessions', point: 'sessions', plan: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
 function renderBar() {
@@ -116,7 +115,7 @@ function renderMe() {
   const page = el(`<section class="card"><h1>Account</h1>
     <ul class="list"><li><span>${esc(member?.name || user.displayName || '')}<br><span class="muted">${esc(user.email)}</span></span>
       ${member ? `<span class="muted">${esc(member.role)}</span>` : ''}</li></ul>
-    ${member ? `<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/rota">Presenter rota</a></li>${admin ? '<li><a href="#/admin">Admin</a></li>' : ''}</ul>` : ''}
+    ${admin ? '<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/admin">Admin</a></li></ul>' : ''}
     <p><button id="out" class="danger-btn">Sign out</button></p></section>`);
   page.querySelector('#out').onclick = () => signOut(auth);
   view.replaceChildren(page);
@@ -210,6 +209,7 @@ async function renderAdmin() {
     <h2>Meeting</h2>
     <form id="club" class="stack"><label>Standing Teams link <input id="cteams" type="url" placeholder="https://…" pattern="https://.*"></label>
       <label>Default start time <input id="ctime" type="time"></label>
+      <label>Usual weekday <select id="cday"><option value="">None</option>${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => `<option value="${i}">${d}</option>`).join('')}</select></label>
       <label>Prompt for members' points <input id="cprompt" maxlength="120"></label>
       <button class="primary">Save meeting settings</button><p id="cmsg" class="muted"></p></form>
     <h2>Discussion form</h2><p class="muted">Applies to all future sessions. A session can override it on its own page.</p>
@@ -219,6 +219,7 @@ async function renderAdmin() {
   Promise.all([loadClub(ctx), loadTemplate(ctx)]).then(([club, fields]) => {
     page.querySelector('#cteams').value = club.teamsUrl || '';
     page.querySelector('#ctime').value = club.time || '';
+    page.querySelector('#cday').value = Number.isInteger(club.weekday) ? String(club.weekday) : '';
     page.querySelector('#cprompt').value = club.pointPrompt || '';
     page.querySelector('#dform').append(fieldEditor(ctx, fields, (f) => saveTemplate(ctx, f)));
   });
@@ -228,7 +229,8 @@ async function renderAdmin() {
     const teamsUrl = page.querySelector('#cteams').value.trim();
     if (teamsUrl && !/^https:\/\/[^\s"<>]+$/.test(teamsUrl)) { msg.textContent = 'The link must start with https://'; return; }
     try {
-      await saveClub(ctx, { teamsUrl, time: page.querySelector('#ctime').value, pointPrompt: page.querySelector('#cprompt').value.trim() });
+      await saveClub(ctx, { teamsUrl, time: page.querySelector('#ctime').value, pointPrompt: page.querySelector('#cprompt').value.trim(),
+        ...(page.querySelector('#cday').value === '' ? {} : { weekday: Number(page.querySelector('#cday').value) }) });
       msg.textContent = 'Saved.';
     } catch { msg.textContent = 'Could not save.'; }
   };

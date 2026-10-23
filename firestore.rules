@@ -75,9 +75,13 @@ service cloud.firestore {
         && request.resource.data.addedAt == request.time
         && request.resource.data.title is string && request.resource.data.title.size() > 0
         && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
-      allow update: if mayEditPaper(pid)
+      allow update: if (mayEditPaper(pid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file'])
-        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
+        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20)
+        // Any member planning a session keeps the paper's `presented` summary in step (written in the session's batch).
+        || (isMember()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presented'])
+        && request.resource.data.presented is list && request.resource.data.presented.size() <= 100);
       allow delete: if mayEditPaper(pid);
 
       // One note and rating per member per paper.
@@ -90,17 +94,8 @@ service cloud.firestore {
             && request.resource.data.updatedAt == request.time));
       }
 
-      // Journal club votes: one per member per paper. No update, so a vote can't be cast twice; delete undoes it.
-      match /votes/{uid} {
-        allow create: if isMember() && request.auth.uid == uid
-          && exists(/databases/$(database)/documents/papers/$(pid))
-          && request.resource.data.keys().hasOnly(['at'])
-          && request.resource.data.at == request.time;
-        allow delete: if isMember() && request.auth.uid == uid;
-      }
     }
     match /{path=**}/notes/{uid} { allow read: if isMember(); }
-    match /{path=**}/votes/{uid} { allow read: if isMember(); }
 
     // PDF text per page, written at upload by whoever may edit the paper.
     match /texts/{pid} {
@@ -124,17 +119,6 @@ service cloud.firestore {
       allow delete: if isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid);
     }
 
-    // Presenter rota: members read it, only admins change it.
-    match /rota/{rid} {
-      allow read: if isMember();
-      allow write: if isAdmin()
-        && (request.method == 'delete' || (
-          request.resource.data.keys().hasOnly(['order', 'next', 'updatedBy', 'updatedAt'])
-          && request.resource.data.order is list && request.resource.data.order.size() <= 300
-          && request.resource.data.next is int && request.resource.data.next >= 0
-          && request.resource.data.updatedBy == request.auth.uid
-          && request.resource.data.updatedAt == request.time));
-    }
 
     // Club settings: members read (the Teams link is for them); only admins change the Teams link, prompt,
     // default start time and the default discussion form.
@@ -143,18 +127,21 @@ service cloud.firestore {
       allow write: if isAdmin()
         && (request.method == 'delete' || (
           cid in ['club', 'discussion']
-          && request.resource.data.keys().hasOnly(['teamsUrl', 'pointPrompt', 'time', 'fields', 'updatedBy', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['teamsUrl', 'pointPrompt', 'time', 'weekday', 'fields', 'updatedBy', 'updatedAt'])
+          && request.resource.data.get('weekday', 0) is int && request.resource.data.get('weekday', 0) >= 0 && request.resource.data.get('weekday', 0) <= 6
           && request.resource.data.get('teamsUrl', '').matches('(https://[^ "<>]+)?')
           && request.resource.data.get('fields', []) is list && request.resource.data.get('fields', []).size() <= 30
           && request.resource.data.updatedBy == request.auth.uid
           && request.resource.data.updatedAt == request.time));
     }
 
-    // Journal club sessions: admins plan them, set the coordinator, Teams link, form override and lock; the
-    // presenter (or a member who is the coordinator) fills in the summary, slides and discussion until it is locked.
+    // Journal club sessions: any member plans one (and is its creator); the creator, the presenter, a member
+    // coordinator and admins edit the plan and fill in the summary, slides and discussion until it is locked.
+    // Only admins lock a session or change its discussion-form override; admins and the creator delete it.
     function sessionOk(d) {
       return d.date is timestamp
         && d.paperId is string && d.paperTitle is string && d.presenterUid is string && d.presenterName is string
+        && d.presenterName.size() <= 120
         && d.summary is string && d.summary.size() <= 8000
         && d.slides is string && d.slides.matches('(https://[^ "<>]+)?')
         && d.get('coordinatorUid', '') is string && d.get('coordinatorName', '') is string
@@ -166,15 +153,16 @@ service cloud.firestore {
         && d.get('discussion', {}) is map
         && d.get('discussion', {}).keys().hasOnly(['fields', 'answers']);
     }
-    function mayFill(d) {
+    function mayPlan(d) {
       return isMember() && !d.get('locked', false)
-        && (d.presenterUid == request.auth.uid || d.get('coordinatorUid', '') == request.auth.uid);
+        && (d.get('createdBy', '') == request.auth.uid || d.presenterUid == request.auth.uid
+            || d.get('coordinatorUid', '') == request.auth.uid);
     }
     match /sessions/{sid} {
       allow read: if isMember();
-      allow create: if isAdmin()
+      allow create: if isMember()
         && request.resource.data.keys().hasOnly(['date', 'paperId', 'paperTitle', 'presenterUid', 'presenterName',
-             'summary', 'slides', 'createdBy', 'createdAt', 'coordinatorUid', 'coordinatorName', 'time'])
+             'summary', 'slides', 'createdBy', 'createdAt', 'coordinatorUid', 'coordinatorName', 'time', 'teamsUrl'])
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.createdAt == request.time
         && sessionOk(request.resource.data);
@@ -182,9 +170,11 @@ service cloud.firestore {
         (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'paperId', 'paperTitle',
            'presenterUid', 'presenterName', 'summary', 'slides', 'coordinatorUid', 'coordinatorName', 'time',
            'teamsUrl', 'template', 'locked', 'discussion']))
-        || (mayFill(resource.data)
-           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['summary', 'slides', 'discussion'])));
-      allow delete: if isAdmin();
+        || (mayPlan(resource.data)
+           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'paperId', 'paperTitle',
+              'presenterUid', 'presenterName', 'summary', 'slides', 'coordinatorUid', 'coordinatorName', 'time',
+              'teamsUrl', 'discussion'])));
+      allow delete: if isAdmin() || (isMember() && resource.data.get('createdBy', '') == request.auth.uid);
 
       // One take-home point per member per session; read-only once the session is locked.
       match /points/{uid} {
