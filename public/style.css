@@ -155,3 +155,17 @@ a.plain { color:inherit; text-decoration:none; }
 .card > .eyebrow { padding:var(--app-s2) var(--app-s1) 0; }
 .session-head, .paper-card { margin-left:var(--app-s1); margin-right:var(--app-s1); }
 .abstract-open { padding:0 var(--app-s1); }
+
+/* In-app PDF reader */
+.reader-bar { display:flex; align-items:center; gap:var(--app-s2); flex-wrap:wrap; margin:0 0 var(--app-s1); }
+.reader-title { margin:0 0 var(--app-s1); font-size:1.05rem; line-height:1.25; }
+.reader-tools { position:sticky; top:var(--app-bar-h, 56px); z-index:5; display:flex; align-items:center; gap:var(--app-s2); padding:var(--app-s1) 0; background:var(--app-bg, #fff); }
+.reader-jump { display:flex; align-items:center; gap:var(--app-s1); margin:0; }
+.reader-jump input { width:4.5rem; }
+.reader-tools button { min-width:44px; min-height:44px; }
+.reader-pages { display:flex; flex-direction:column; align-items:center; gap:var(--app-s2); touch-action:pan-x pan-y; }
+.reader-pg { position:relative; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.25); flex:none; }
+.reader-pg canvas { display:block; }
+.pdf-hl { position:absolute; background:rgba(255,213,0,.45); mix-blend-mode:multiply; border-radius:2px; pointer-events:none; }
+.offline-badge { font-size:var(--app-t-caption); color:var(--app-wine); font-weight:600; }
+.reader-pages { padding-bottom:60vh; } /* lets the last pages scroll to the top, so a jump to any page lands there */

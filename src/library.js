@@ -14,8 +14,9 @@ import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, c
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
+import { isOffline, forget as forgetOffline, syncStarred } from './offline.js';
 
-export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex', 'duplicates'];
+export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex', 'duplicates', 'read'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
@@ -64,6 +65,7 @@ export function renderLibraryRoute(r, ctx) {
   c = ctx;
   if (r.name === 'add') return renderAdd();
   if (r.name === 'import') return renderImport();
+  if (r.name === 'read' && r.arg) return import('./reader.js').then((m) => m.renderReader(r, c, apiFetch));
   if (r.name === 'paper' && r.arg) return renderPaper(r.arg, Number(r.arg2) || null);
   if (r.name === 'remove' && r.arg) return renderRemove(r.arg);
   if (r.name === 'lists') return renderSaved(c, loadLibrary, paperItem);
@@ -85,8 +87,11 @@ function paperItem(id, p, page, snippet) {
   const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${c.esc(authorLine(p.authors))}</span>` : '';
   const last = (p.presented || []).at(-1);
   const badge = last ? ` <${last.sid ? `a href="#/session/${c.esc(last.sid)}"` : 'span'} class="badge">Presented ${c.esc(presentedOn(last).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</${last.sid ? 'a' : 'span'}>` : '';
-  return c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>${authors}
-    <span class="muted">${c.esc(meta)}${pdf}${noAbs}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
+  // A PDF text hit opens the reader at that page with the search word marked; other rows open the paper page.
+  const href = page && p.file ? `#/read/${id}/${page}${ui.q ? '?q=' + encodeURIComponent(ui.q) : ''}` : `#/paper/${id}${page ? '/' + page : ''}`;
+  const off = isOffline(id) ? ' <span class="offline-badge" title="Saved on this device">Offline</span>' : '';
+  return c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${c.esc(p.title)}</a>${authors}
+    <span class="muted">${c.esc(meta)}${pdf}${noAbs}${hit}</span>${off}${snip}<span>${badge}${tags}</span></li>`);
 }
 
 async function renderSearch() {
@@ -118,7 +123,7 @@ async function renderSearch() {
       res.replaceChildren(...head.map(([id, p]) => paperItem(id, p)));
       timing.head = Math.round(performance.now() - t0);
     } else if (!readSync() && !ui.q) {
-      const h = await getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))).catch(() => null);
+      const h = await withTimeout(getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))), 3000, 'first page').catch(() => null);
       if (h && !current() && page.isConnected) {
         res.replaceChildren(...h.docs.map((d) => paperItem(d.id, cleanPaper(d.data()))));
         timing.head = Math.round(performance.now() - t0);
@@ -129,12 +134,18 @@ async function renderSearch() {
   // catalogue replaces it when it arrives. Failures go to window.__jcTiming (loadError, starredError, ...).
   const why = (k) => (e) => { timing[k] = e?.code || e?.message || String(e); console.warn('library', k, e); };
   const real = loadLibrary();
+  // Starred and Recent wait no longer than the catalogue does; they fill in (and the list redraws) when they arrive.
+  const wait = readHead()?.length ? 2500 : 8000, starP = loadStarred(c.db, c.user.uid), recentP = loadRecent(c.db, c.user.uid);
   let [cat, starred, recent] = await Promise.all([
-    withTimeout(real, readHead()?.length ? 2500 : 8000, 'catalogue').catch((e) => { why('loadError')(e); return headCatalogue(); }),
-    withTimeout(loadStarred(c.db, c.user.uid), 5000, 'starred').catch((e) => { why('starredError')(e); return new Set(); }),
-    withTimeout(loadRecent(c.db, c.user.uid), 5000, 'recent').catch((e) => { why('recentError')(e); return []; })]);
+    withTimeout(real, wait, 'catalogue').catch((e) => { why('loadError')(e); return headCatalogue(); }),
+    withTimeout(starP, Math.min(wait, 3000), 'starred').catch((e) => { why('starredError')(e); return new Set(); }),
+    withTimeout(recentP, Math.min(wait, 3000), 'recent').catch((e) => { why('recentError')(e); return []; })]);
   if (!page.isConnected) return;
   x.starred = starred; x.recent = recent;
+  starP.then((s) => { if (page.isConnected && s !== starred) { x.starred = starred = s; redraw(); } }).catch(() => {});
+  recentP.then((r) => { if (page.isConnected && r !== recent) { x.recent = recent = r; redraw(); } }).catch(() => {});
+  // Starred papers are kept for offline reading: fetch any not saved yet, quietly, once the full catalogue is here.
+  real.then((full) => syncStarred(starred, full.papers, (id) => apiFetch(`/api/file/${id}`))).catch(() => {});
   let { papers } = cat;
   if (cat.partial) {
     real.then((full) => { if (page.isConnected && cat.partial) { cat = full; papers = full.papers; redraw(); } })
@@ -509,14 +520,6 @@ async function renderImport() {
   };
 }
 
-async function openPdf(id, page) {
-  const w = window.open('', '_blank'); // opened before the await so pop-up blockers allow it
-  const r = await apiFetch(`/api/file/${id}`);
-  if (!r.ok) { w?.close(); alert('Could not open the PDF.'); return; }
-  const url = URL.createObjectURL(await r.blob()) + (page ? `#page=${page}` : '');
-  if (w) w.location.href = url; else location.href = url;
-}
-
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { forget(id); c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
@@ -560,8 +563,9 @@ async function renderPaper(id, hitPage) {
   const file = $in(page, '#file');
   if (p.file) {
     const open = c.el(`<button class="primary">Open PDF${hitPage ? ` at page ${hitPage}` : ''}</button>`);
-    open.onclick = () => openPdf(id, hitPage);
+    open.onclick = () => { location.hash = `#/read/${id}${hitPage ? '/' + hitPage : ''}`; };
     file.append(open, c.el(`<span class="muted"> ${p.file.pages} pages</span>`));
+    if (isOffline(id)) file.append(c.el(' <span class="offline-badge" title="Saved on this device">Offline copy</span>'));
   } else if (mayEdit(p)) {
     const up = c.el(`<form id="uf" class="stack">
       <input type="file" id="pdf" accept="application/pdf" aria-label="PDF file">
@@ -633,7 +637,12 @@ async function renderPaper(id, hitPage) {
     star.setAttribute('aria-pressed', String(on));
     star.classList.toggle('on', on);
   };
-  star.onclick = async () => { star.disabled = true; await setStarred(c.db, c.user.uid, [id], !starred.has(id)).catch(() => {}); star.disabled = false; drawStar(); };
+  star.onclick = async () => {
+    star.disabled = true;
+    await setStarred(c.db, c.user.uid, [id], !starred.has(id)).catch(() => {});
+    star.disabled = false; drawStar();
+    if (starred.has(id) && p.file) syncStarred(starred, new Map([[id, p]]), (x) => apiFetch(`/api/file/${x}`)).catch(() => {}); // starred papers are kept for offline
+  };
   drawStar();
   const inl = [...(starred.has(id) ? ['Starred'] : []), ...lists.filter((l) => !l.starred && l.paperIds.includes(id)).map((l) => l.name)];
   $in(page, '#inlists').textContent = inl.length ? `In ${inl.join(', ')}` : 'Not in any of your lists yet.';
@@ -693,6 +702,7 @@ async function renderRemove(id) {
       if (!confirm('Remove the stored PDF?')) return;
       try {
         await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); // also drops its pages from search
+        forgetOffline(id);
         await deleteDoc(doc(c.db, 'texts', id)).catch(() => {}); // pre-D1 copy, if any
         await updateDoc(doc(c.db, 'papers', id), { file: null, changedAt: serverTimestamp() });
         await clearFlags();
@@ -704,7 +714,7 @@ async function renderRemove(id) {
     e.preventDefault();
     if (norm($in(page, '#rtitle').value) !== norm(p.title)) return;
     try {
-      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)).catch(() => {}); }
+      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); forgetOffline(id); await deleteDoc(doc(c.db, 'texts', id)).catch(() => {}); }
       await apiFetch(`/api/index/${id}`, { method: 'DELETE' }).catch(() => {});
       await deleteDoc(doc(c.db, 'papers', id));
       await clearFlags().catch(() => {});
