@@ -30,7 +30,7 @@ const ABSTRACT_NOTE = {
   pdf: 'Taken from the PDF’s own abstract or summary.',
 };
 const AUTHORS_KEY = 'jc.showAuthors';
-const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) === '1'; } catch { return false; } };
+const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) !== '0'; } catch { return true; } }; // on unless turned off
 
 const $in = (root, sel) => root.querySelector(sel);
 const mayEdit = (p) => c.member.role === 'admin' || p.addedBy === c.user.uid;
@@ -77,11 +77,20 @@ export function renderLibraryRoute(r, ctx) {
 
 const presentedOn = (e) => (e.date?.toDate ? e.date.toDate() : new Date(e.date));
 
+const PDF_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+
+// A tag pill on a row: show the library filtered to that tag.
+function showTag(t) {
+  ui.filter = emptyFilter(); ui.filter.tag = t; ui.q = '';
+  if (location.hash === '#/library') renderSearch(); else location.hash = '#/library';
+}
+
+// Row: title, authors, journal and year, then pills (PDF opens the reader, Presented, tags filter the library).
 function paperItem(id, p, page, snippet) {
   const meta = [p.journal, p.year].filter(Boolean).join(' ');
-  const tags = (p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ');
+  const tags = (p.tags || []).map((t) => `<a class="tag" href="#/library" data-tag="${c.esc(t)}">${c.esc(t)}</a>`).join('');
   const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
-  const pdf = p.file ? ' <span class="muted">PDF</span>' : '';
+  const pdf = p.file ? `<a class="pdf-pill" href="#/read/${c.esc(id)}" aria-label="Open the PDF">${PDF_ICON}PDF</a>` : '';
   const noAbs = p.abstract ? '' : ' <span class="warn-text">no abstract</span>';
   const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
   const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${c.esc(authorLine(p.authors))}</span>` : '';
@@ -90,8 +99,14 @@ function paperItem(id, p, page, snippet) {
   // A PDF text hit opens the reader at that page with the search word marked; other rows open the paper page.
   const href = page && p.file ? `#/read/${id}/${page}${ui.q ? '?q=' + encodeURIComponent(ui.q) : ''}` : `#/paper/${id}${page ? '/' + page : ''}`;
   const off = isOffline(id) ? ' <span class="offline-badge" title="Saved on this device">Offline</span>' : '';
-  return c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${c.esc(p.title)}</a>${authors}
-    <span class="muted">${c.esc(meta)}${pdf}${noAbs}${hit}</span>${off}${snip}<span>${badge}${tags}</span></li>`);
+  const pills = pdf + badge + tags;
+  const li = c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${c.esc(p.title)}</a>${authors}
+    ${meta || noAbs || hit ? `<span class="muted">${c.esc(meta)}${noAbs}${hit}</span>` : ''}${off}${snip}${pills ? `<span class="pills">${pills}</span>` : ''}</li>`);
+  li.querySelectorAll('a.tag').forEach((a) => { a.onclick = (e) => {
+    if (li.classList.contains('selecting') || document.body.classList.contains('selecting')) return; // a tap while selecting ticks the row
+    e.preventDefault(); showTag(a.dataset.tag);
+  }; });
+  return li;
 }
 
 async function renderSearch() {

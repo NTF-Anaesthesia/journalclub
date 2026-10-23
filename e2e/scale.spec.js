@@ -80,7 +80,7 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   await expect(hit).toContainText('Seeded trial 0500');
   await expect(hit.locator('.hit')).toHaveText('p. 7');
   await expect(hit.locator('.snippet mark')).toHaveText('zygomatic');
-  await expect(hit.getByRole('link')).toHaveAttribute('href', '#/read/s0500/7?q=zygomatic') // a PDF hit opens the in-app reader at the page;
+  await expect(hit.getByRole('link').first()).toHaveAttribute('href', '#/read/s0500/7?q=zygomatic') // a PDF hit opens the in-app reader at the page;
   expect(calls).toContain('GET /api/search');
   // Metadata still searches on the phone; the old texts/ collection is not read.
   await page.getByLabel('Search the library').fill('trial 0042');
