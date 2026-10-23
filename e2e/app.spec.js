@@ -45,7 +45,7 @@ test('admin invites, a newcomer joins once, the link then dies', async ({ page, 
   await p2.reload();
   await expect(p2.getByText('Join as new@example.org?')).toBeVisible();
   await p2.getByRole('button', { name: 'Accept invite' }).click();
-  await expect(p2.getByRole('heading', { name: 'Next session' })).toBeVisible();
+  await expect(p2.getByLabel('Search the library')).toBeVisible();
   await expect(p2.getByText('Admin', { exact: true })).toHaveCount(0);
 
   const ctx3 = await browser.newContext();
