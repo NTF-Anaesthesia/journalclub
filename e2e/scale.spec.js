@@ -12,13 +12,14 @@ const s = (v) => ({ stringValue: v });
 const at = (ms) => ({ timestampValue: new Date(ms).toISOString() });
 const T0 = Date.UTC(2026, 0, 1);
 
-async function signInAsMember(page, email) {
+async function signIn(page, email) {
   await page.goto(`/?emulator=${PROJECT}`);
-  const uid = await page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
+  return page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
+}
+async function makeMember(page, uid, email) {
   const r = await page.request.patch(`${DOCS}/members/${uid}`, { headers: owner, data: { fields: {
     email: s(email), name: s('Res Scale'), role: s('member'), inviteId: s('seed') } } });
   expect(r.ok()).toBeTruthy();
-  return uid;
 }
 
 const paperFields = (i, uid, extra = {}) => ({
@@ -54,10 +55,13 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   // Its own emulator project, so other specs' papers (and their parallel runs) don't change the counts.
   const { db, calls } = await workerApi(page, PROJECT);
   expect((await page.request.delete(`http://127.0.0.1:8080/emulator/v1/projects/${PROJECT}/databases/(default)/documents`)).ok()).toBeTruthy();
-  const uid = await signInAsMember(page, 'scale@example.org');
+  // Papers first, membership last, so the app can't load (and cache) a half-seeded library.
+  const uid = await signIn(page, 'scale@example.org');
   await seed(page, uid, db);
+  await makeMember(page, uid, 'scale@example.org');
 
-  // Cold open: the app last loaded before this person was a member, so nothing is cached yet.
+  // Cold open: no sync stamp, so a full read (the newest 50 shown first).
+  await page.evaluate(() => localStorage.removeItem('jc.catalogueSync'));
   const t0 = Date.now();
   await page.reload();
   await expect(page.locator('#res li')).toHaveCount(50);
