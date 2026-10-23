@@ -1,41 +1,65 @@
-/* Journal Club on the NTF Anaesthesia app kit (https://anantf.com/assets/app/app.css): its tokens, type and
-   surfaces, mapped onto this app's own markup. Light only, like the kit. */
-:root { --bg:var(--app-ground); --fg:var(--app-ink); --muted:var(--app-muted); --card:var(--app-surface); --line:var(--app-line);
-  --accent:var(--app-wine); --danger:var(--app-bad); }
-body { margin:0; background:var(--app-ground); color:var(--app-ink); font:var(--app-t-body)/1.5 var(--app-sans); }
-header { position:sticky; top:0; z-index:20; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;
-  padding:calc(10px + var(--app-safe-t)) 16px 10px; background:var(--app-bar); box-shadow:0 .5px 0 var(--app-line);
-  -webkit-backdrop-filter:saturate(1.8) blur(20px); backdrop-filter:saturate(1.8) blur(20px); }
-header > strong { font-family:var(--app-serif); font-weight:500; font-size:var(--app-t-title2); letter-spacing:-.015em; }
-main { max-width:680px; margin:0 auto; padding:var(--app-s4) var(--app-gutter) var(--app-s8); }
-.card { background:var(--app-surface); border-radius:var(--app-r-lg); padding:var(--app-s4); }
-h1 { font-family:var(--app-serif); font-weight:400; font-size:var(--app-t-title1); line-height:1.2; letter-spacing:-.02em; margin:.1em 0 .5em; }
-h2 { font-family:var(--app-serif); font-weight:400; font-size:var(--app-t-title2); line-height:1.25; margin:1.2em 0 .4em; }
+/* Journal Club on the NTF Anaesthesia app kit (https://anantf.com/assets/app/app.css). The shell (bar, tab bar,
+   main) uses kit classes in index.html; the pages' own markup is mapped onto the kit's look here. Light only. */
+:root { --muted:var(--app-muted); --line:var(--app-line); --accent:var(--app-wine); }
+.app-main { max-width:680px; margin:0 auto; }
+.app-bar-btn { color:var(--app-wine); }
+
+/* A page is plain: large title, then grouped surfaces. */
+.card { padding:0; }
+.card > h1 { margin:var(--app-s1) 0 var(--app-s3); padding:0 var(--app-s1); font-family:var(--app-serif); font-weight:400;
+  font-size:var(--app-t-large); line-height:1.12; letter-spacing:-.02em; text-wrap:balance; overflow-wrap:anywhere; }
+.card > p:first-child { margin:var(--app-s2) 0 0; }
+.card > p:first-child a { text-decoration:none; font-weight:500; }
+h2 { margin:var(--app-s6) 0 var(--app-s2); padding:0 var(--app-s1); font-family:var(--app-serif); font-weight:400;
+  font-size:var(--app-t-title2); line-height:1.25; letter-spacing:-.015em; }
+.card > p, .card > details { padding:0 var(--app-s1); }
 .muted { color:var(--app-muted); font-size:var(--app-t-subhead); }
-a { color:var(--app-wine); text-underline-offset:2px; }
-button, input, select { font:inherit; font-size:var(--app-t-callout); padding:10px 12px; border-radius:var(--app-r-sm); border:1px solid var(--app-line-strong);
-  background:var(--app-surface); color:var(--app-ink); min-height:44px; }
-button { cursor:pointer; }
-button.primary, a.button.primary { background:var(--app-wine); color:var(--app-ivory); border-color:var(--app-wine); font-weight:600; }
-button.primary:active, a.button.primary:active { background:var(--app-wine-press); }
-button.primary:disabled { opacity:.5; }
-button.link { border:0; background:none; color:var(--app-wine); padding:4px 8px; min-height:36px; font-weight:600; }
-button.danger { color:var(--app-bad); }
-.list { list-style:none; margin:0; padding:0; } .list li { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-top:1px solid var(--app-line); flex-wrap:wrap; }
-form { display:flex; gap:8px; flex-wrap:wrap; } form input { flex:1 1 160px; }
+a { color:var(--app-wine); text-underline-offset:2px; overflow-wrap:anywhere; }
 code { word-break:break-all; font-family:var(--app-mono); font-size:var(--app-t-footnote); }
-header nav { display:flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:var(--app-t-subhead); } header nav a { text-decoration:none; font-weight:600; }
-header .who { overflow-wrap:anywhere; }
-textarea { font:inherit; font-size:var(--app-t-callout); padding:10px 12px; border-radius:var(--app-r-sm); border:1px solid var(--app-line-strong); background:var(--app-surface); color:var(--app-ink); width:100%; }
-form.row { flex-wrap:nowrap; } form.row input, form.row select { min-width:0; }
-form.stack { flex-direction:column; align-items:stretch; } form.stack label { display:flex; flex-direction:column; gap:4px; font-size:var(--app-t-subhead); color:var(--app-ink-soft); }
-form.stack label.check { flex-direction:row; align-items:center; gap:8px; } form.stack button { align-self:flex-start; }
-input[type=checkbox], input[type=radio] { accent-color:var(--app-wine); min-height:0; }
-a.button { display:inline-flex; align-items:center; min-height:44px; padding:8px 16px; border-radius:var(--app-r-sm); text-decoration:none; }
-.actions { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+
+/* Lists are inset grouped surfaces with hairline separators. */
+.list { list-style:none; margin:0 0 var(--app-s4); padding:0; background:var(--app-surface); border-radius:var(--app-r-lg); overflow:clip; }
+.list:empty { display:none; }
+.list li { position:relative; display:flex; justify-content:space-between; align-items:center; gap:var(--app-s2); flex-wrap:wrap;
+  min-height:50px; padding:var(--app-s3) var(--app-s4); }
+.list li + li::before { content:""; position:absolute; top:0; left:var(--app-s4); right:0; height:1px; background:var(--app-line); }
 .list li.paper { flex-direction:column; align-items:flex-start; gap:2px; } .list li > span { overflow-wrap:anywhere; }
+.list li.paper > a, .nav-list a, .list li.vote a { color:var(--app-ink); text-decoration:none; font-weight:500; }
+.nav-list li { padding:0; } .nav-list a { display:flex; align-items:center; width:100%; min-height:50px; padding:var(--app-s3) var(--app-s4); }
+.nav-list a::after { content:""; margin-left:auto; width:8px; height:8px; border:solid var(--app-control); border-width:2px 2px 0 0; transform:rotate(45deg); }
+ol.list { padding:0; }
+
+/* Controls follow the kit: 50 px wine primary, plain text buttons, borderless inputs on surface. */
+button, input, select, textarea { font:inherit; font-size:var(--app-t-body); color:var(--app-ink); }
+input, select, textarea { min-height:50px; padding:12px 14px; border:0; border-radius:var(--app-r-md); background:var(--app-surface); width:100%; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline:none; box-shadow:inset 0 0 0 2px var(--app-wine); }
+input::placeholder, textarea::placeholder { color:#76736b; }
+input[type=checkbox], input[type=radio] { width:22px; min-height:0; height:22px; accent-color:var(--app-wine); flex:none; }
+input[type=file] { padding:10px; }
+button { cursor:pointer; border:0; border-radius:var(--app-r-md); min-height:44px; padding:0 var(--app-s4); background:var(--app-blush); color:var(--app-wine); font-weight:600; }
+button.primary, a.button.primary { min-height:50px; padding:var(--app-s2) var(--app-s5); background:var(--app-wine); color:var(--app-ivory); }
+button.primary:active, a.button.primary:active { background:var(--app-wine-press); }
+button:active { transform:scale(.97); } button:disabled { opacity:.4; transform:none; cursor:default; }
+button.link { background:none; color:var(--app-wine); padding:0 var(--app-s2); min-height:36px; }
+button.danger { color:var(--app-bad); }
+.danger-btn { width:100%; min-height:50px; background:var(--app-bad-bg); color:var(--app-bad); }
+a.button { display:inline-flex; align-items:center; justify-content:center; border-radius:var(--app-r-md); text-decoration:none; font-weight:600; }
+form { display:flex; gap:var(--app-s2); flex-wrap:wrap; margin:0 0 var(--app-s4); } form > input { flex:1 1 160px; } label > input, label > select, label > textarea { flex:none; }
+form.row { flex-wrap:nowrap; } form.row input, form.row select { min-width:0; } form.row button { flex:none; }
+form.stack { flex-direction:column; align-items:stretch; } form.stack > input { flex:none; }
+form.stack label { display:flex; flex-direction:column; gap:6px; padding:0 var(--app-s1); font-size:var(--app-t-subhead); font-weight:500; color:var(--app-ink-soft); }
+form.stack label.check { flex-direction:row; align-items:center; gap:var(--app-s2); font-weight:400; }
+form.stack button { align-self:stretch; }
+.actions { display:flex; gap:var(--app-s4); align-items:center; flex-wrap:wrap; padding:0 var(--app-s1); }
+.actions a.button.primary { flex:1; }
 .tag { display:inline-block; font-size:var(--app-t-caption); padding:2px 10px; border-radius:var(--app-r-full); background:var(--app-inset); color:var(--app-ink-soft); margin:2px 2px 0 0; }
 .hit { font-weight:600; color:var(--app-wine); }
-h1, h2, a { overflow-wrap:anywhere; } .abstract { white-space:pre-line; } details summary { cursor:pointer; padding:6px 0; }
-.list li.vote > span:first-child { flex:1 1 200px; } .count { font-weight:600; min-width:2ch; text-align:right; font-variant-numeric:tabular-nums; }
-.next { font-size:var(--app-t-callout); background:var(--app-inset); border-radius:var(--app-r-md); padding:var(--app-s3) var(--app-s4); } ol.list { padding:0; }
+.abstract { white-space:pre-line; } details summary { cursor:pointer; padding:var(--app-s2) 0; color:var(--app-wine); font-weight:500; }
+
+/* Journal club */
+.list li.vote > span:first-child { flex:1 1 180px; }
+.count { font-weight:600; min-width:2ch; text-align:right; font-variant-numeric:tabular-nums; color:var(--app-muted); }
+.list li.vote button.primary { min-height:44px; }
+#next { margin:0 0 var(--app-s4); }
+.next { margin:0; padding:var(--app-s4); border-radius:var(--app-r-lg); background:var(--app-wine); color:var(--app-ivory); font-size:var(--app-t-callout); }
+.next a { color:var(--app-ivory); } .next .muted { color:#eadbd6; }
