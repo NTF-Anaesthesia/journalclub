@@ -283,6 +283,11 @@ test('prefs: users/<uid> holds the last 20 papers opened, own doc only', async (
   await assertFails(setDoc(doc(m1, 'users/mem1'), { recent: Array.from({ length: 21 }, (_, i) => `p${i}`), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(doc(m1, 'users/mem1'), { recent: [], starred: ['x'], updatedAt: serverTimestamp() }));
   await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'users/nobody'), { recent: [], updatedAt: serverTimestamp() }));
+  // Saved searches sit beside Recent; either may be written alone (merge), 20 at most.
+  await assertSucceeds(setDoc(doc(m1, 'users/mem1'), { searches: ['tag:airway', 'author:lee'], updatedAt: serverTimestamp() }, { merge: true }));
+  await assertSucceeds(setDoc(doc(m1, 'users/mem1'), { recent: ['p3'], updatedAt: serverTimestamp() }, { merge: true }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { searches: Array.from({ length: 21 }, (_, i) => `q${i}`), updatedAt: serverTimestamp() }, { merge: true }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { searches: 'tag:x', updatedAt: serverTimestamp() }, { merge: true }));
 });
 
 test('votes and the rota are gone: every path is denied', async () => {

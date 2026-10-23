@@ -1,4 +1,4 @@
-import { test, expect, PROJECT, DOCS } from './emu.js';
+import { test, expect, PROJECT, DOCS, pickFilter } from './emu.js';
 import { workerApi } from './worker-api.js';
 import { indexPages } from '../worker/search.js';
 
@@ -54,7 +54,7 @@ test('admin Fill missing details: old ATOTW gets the PDF summary, a journal PDF 
   await indexPages(w.db, 'k1', ['Some text of a paper that already has an abstract.']);
   await open(page);
 
-  await page.getByRole('button', { name: /^No abstract · 4$/ }).click();
+  await pickFilter(page, /^No abstract · 4$/);
   await expect(page.locator('#res li')).toHaveCount(4);
   await longPress(page, page.locator('#res li').first());
   await page.getByRole('button', { name: 'All 4' }).click();

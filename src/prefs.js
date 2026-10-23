@@ -1,12 +1,13 @@
 // Per-member state synced across devices: the Starred list (lists/star-<uid>, private), the last 20 papers
-// opened (users/<uid>.recent), and the member's private reading lists. Everything shared is a tag on the paper.
+// opened (users/<uid>.recent), saved searches (users/<uid>.searches), and the member's private reading lists. Everything shared is a tag on the paper.
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where, serverTimestamp, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
 
 const RECENT = 20;
-let mine = { uid: null, starred: null, recent: null };
-const reset = (uid) => { if (mine.uid !== uid) mine = { uid, starred: null, recent: null }; };
+const SEARCHES = 20;
+let mine = { uid: null, starred: null, recent: null, searches: null };
+const reset = (uid) => { if (mine.uid !== uid) mine = { uid, starred: null, recent: null, searches: null }; };
 export const starId = (uid) => `star-${uid}`;
 
 export async function loadStarred(db, uid) {
@@ -34,20 +35,40 @@ export async function setStarred(db, uid, ids, on) {
   }
 }
 
+// One read of users/<uid> fills both Recent and saved searches.
+let userRead = null;
+async function readUser(db, uid) {
+  if (!userRead || userRead.uid !== uid) {
+    userRead = { uid, p: getDoc(doc(db, 'users', uid)).then((s) => (s.exists() ? s.data() : {}), (e) => { userRead = null; throw e; }) };
+  }
+  return userRead.p;
+}
+
 export async function loadRecent(db, uid) {
   reset(uid);
-  if (!mine.recent) {
-    const s = await getDoc(doc(db, 'users', uid)).catch(() => null);
-    mine.recent = s?.exists() ? s.data().recent || [] : [];
-  }
+  if (!mine.recent) mine.recent = (await readUser(db, uid).catch(() => ({}))).recent || [];
   return mine.recent;
+}
+
+// Saved searches: the box text, newest first.
+export async function loadSearches(db, uid) {
+  reset(uid);
+  if (!mine.searches) mine.searches = (await readUser(db, uid).catch(() => ({}))).searches || [];
+  return mine.searches;
+}
+
+export async function setSearchSaved(db, uid, q, on) {
+  const all = await loadSearches(db, uid);
+  mine.searches = on ? [q, ...all.filter((s) => s !== q)].slice(0, SEARCHES) : all.filter((s) => s !== q);
+  await setDoc(doc(db, 'users', uid), { searches: mine.searches, updatedAt: serverTimestamp() }, { merge: true });
+  return mine.searches;
 }
 
 export async function touchRecent(db, uid, id) {
   const r = await loadRecent(db, uid);
   if (r[0] === id) return;
   mine.recent = [id, ...r.filter((x) => x !== id)].slice(0, RECENT);
-  await setDoc(doc(db, 'users', uid), { recent: mine.recent, updatedAt: serverTimestamp() }).catch(() => {});
+  await setDoc(doc(db, 'users', uid), { recent: mine.recent, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
 }
 
 // The member's own lists: { id, ...data, mine, starred }, Starred first. Lists are private; shared groups are tags.

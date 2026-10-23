@@ -5,6 +5,7 @@ import {
   query, where, orderBy, limit, serverTimestamp,
 } from 'firebase/firestore';
 import { searchPapers, mergeHits } from './search.js';
+import { parseQuery, queryMatches, phrasesMatch, serverQuery, suggest, lastToken, facets, markHtml, abstractSnippet, HELP } from './query.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { tidyAtotw } from './atotw.js';
 import { abstractSections, cleanPaper } from './abstract.js';
@@ -12,7 +13,7 @@ import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, selectAll, SELECT_CAP } from './filters.js';
-import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
+import { loadStarred, setStarred, loadRecent, touchRecent, loadLists, loadSearches, setSearchSaved } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
 import { isOffline, forget as forgetOffline, syncStarred } from './offline.js';
@@ -26,7 +27,12 @@ const HEAD_SORT = new Set(['discussed', 'newest']); // the saved first paint is 
 // The list's state, kept while moving between pages: search, filters, sort, rows shown, and a selection to restore.
 const SORT_KEY = 'jc.sort';
 const savedSort = () => { try { const v = localStorage.getItem(SORT_KEY); return SORTS.some(([k]) => k === v) ? v : 'discussed'; } catch { return 'discussed'; } };
-const ui = { q: '', filter: emptyFilter(), sort: savedSort(), shown: PAGE, pendingSel: null };
+const ui = { q: '', filter: emptyFilter(), sort: savedSort(), searchSort: 'relevance', shown: PAGE, pendingSel: null };
+// What rows show beyond the paper: the search words to mark, and session slides (sid -> { pdf } or { url }).
+const rowCtx = { words: [], slides: new Map() };
+const RECENT_Q = 'jc.recentSearches';
+const recentSearches = () => { try { return JSON.parse(localStorage.getItem(RECENT_Q) || '[]'); } catch { return []; } };
+const rememberSearch = (q) => { try { localStorage.setItem(RECENT_Q, JSON.stringify([q, ...recentSearches().filter((x) => x !== q)].slice(0, 8))); } catch { /* private */ } };
 const ABSTRACT_NOTE = {
   pdf: 'Taken from the PDF’s own abstract or summary.',
 };
@@ -61,9 +67,44 @@ async function serverSearch(q) {
   } catch { return { hits: [] }; }
 }
 const snippetHtml = (s) => c.esc(s).replace(/\u0002/g, '<mark>').replace(/\u0003/g, '</mark>');
+const safeUrl = (u) => (/^https:\/\//i.test(String(u || '')) ? String(u) : '');
+
+// Which sessions have slides. Sessions are few (one a week or so), so one read per app open, kept 5 minutes.
+let slidesCache = null;
+function loadSlides() {
+  if (!slidesCache || Date.now() - slidesCache.at > 300000) {
+    const p = getDocs(collection(c.db, 'sessions')).then((ss) => {
+      const m = new Map();
+      for (const d of ss.docs) {
+        const s = d.data();
+        if (s.slidesFile?.pdf) m.set(d.id, { pdf: true });
+        else if (safeUrl(s.slides)) m.set(d.id, { url: safeUrl(s.slides) });
+      }
+      return m;
+    }, (e) => { slidesCache = null; throw e; });
+    slidesCache = { at: Date.now(), p };
+  }
+  return slidesCache.p;
+}
+// The newest session of this paper that has slides: { sid, pdf } or { sid, url }; null if none.
+function slidesFor(p) {
+  for (const e of [...(p.presented || [])].reverse()) { const m = rowCtx.slides.get(e.sid); if (m) return { sid: e.sid, ...m }; }
+  return null;
+}
+// The slides' PDF opens in a new tab (as on the session page).
+async function openSlides(sid) {
+  const w = window.open('', '_blank'); // opened before the await so pop-up blockers allow it
+  const r = await apiFetch(`/api/slides/${sid}/pdf`).catch(() => null);
+  if (!r?.ok) { w?.close(); alert('Could not open the slides.'); return; }
+  const url = URL.createObjectURL(await r.blob());
+  if (w) w.location.href = url; else location.href = url;
+}
+const BOOKMARK = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>';
+const SLIDES_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M12 16v4M8 20h8"/></svg>';
 
 export function renderLibraryRoute(r, ctx) {
   c = ctx;
+  rowCtx.words = []; // only the library search marks words
   if (r.name === 'add') return renderAdd();
   if (r.name === 'import') return renderImport();
   if (r.name === 'read' && r.arg) return import('./reader.js').then((m) => m.renderReader(r, c, apiFetch));
@@ -89,20 +130,29 @@ function showTag(t) {
 // Row: title, authors, journal and year, then pills (PDF opens the reader, Presented, tags filter the library).
 function paperItem(id, p, page, snippet) {
   const meta = [p.journal, p.year, p.atotw && `No. ${p.atotw}`].filter(Boolean).join(' ');
+  const ws = rowCtx.words;
   const tags = (p.tags || []).map((t) => `<a class="tag" href="#/library" data-tag="${c.esc(t)}">${c.esc(t)}</a>`).join('');
   const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
   const pdf = p.file ? `<a class="pdf-pill" href="#/read/${c.esc(id)}" aria-label="Open the PDF">${PDF_ICON}PDF</a>` : '';
   const noAbs = p.abstract ? '' : ' <span class="warn-text">no abstract</span>';
-  const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
-  const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${c.esc(authorLine(p.authors))}</span>` : '';
+  // A metadata hit with no PDF or notes snippet shows where its abstract matched.
+  const absSnip = !snippet && ws.length ? abstractSnippet(p.abstract, ws) : '';
+  const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : absSnip ? `<span class="snippet muted">${markHtml(absSnip, ws, c.esc)}</span>` : '';
+  const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${markHtml(authorLine(p.authors), ws, c.esc)}</span>` : '';
   const last = (p.presented || []).at(-1);
   const badge = last ? ` <${last.sid ? `a href="#/session/${c.esc(last.sid)}"` : 'span'} class="badge">Presented ${c.esc(presentedOn(last).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</${last.sid ? 'a' : 'span'}>` : '';
   // A PDF text hit opens the reader at that page with the search word marked; other rows open the paper page.
   const href = page && p.file ? `#/read/${id}/${page}${ui.q ? '?q=' + encodeURIComponent(ui.q) : ''}` : `#/paper/${id}${page ? '/' + page : ''}`;
-  const off = isOffline(id) ? ' <span class="offline-badge" title="Saved on this device">Offline</span>' : '';
-  const pills = pdf + badge + tags;
-  const li = c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${c.esc(p.title)}</a>${authors}
-    ${meta || noAbs || hit ? `<span class="muted">${c.esc(meta)}${noAbs}${hit}</span>` : ''}${off}${snip}${pills ? `<span class="pills">${pills}</span>` : ''}</li>`);
+  const off = p.file && isOffline(id) ? '<span class="offline-badge" title="Saved on this device">Offline</span>' : '';
+  const sl = slidesFor(p);
+  const slides = !sl ? '' : sl.url
+    ? `<a class="pdf-pill" href="${c.esc(sl.url)}" target="_blank" rel="noopener" aria-label="Open the session slides">${SLIDES_ICON}Slides</a>`
+    : `<button type="button" class="pdf-pill slides-pill" data-sid="${c.esc(sl.sid)}" aria-label="Open the session slides">${SLIDES_ICON}Slides</button>`;
+  const pills = pdf + off + badge + slides + tags;
+  const li = c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${markHtml(p.title, ws, c.esc)}</a>${authors}
+    ${meta || noAbs || hit ? `<span class="muted">${c.esc(meta)}${noAbs}${hit}</span>` : ''}${snip}${pills ? `<span class="pills">${pills}</span>` : ''}</li>`);
+  const sp = li.querySelector('.slides-pill');
+  if (sp) sp.onclick = (e) => { if (document.body.classList.contains('selecting')) return; e.preventDefault(); e.stopPropagation(); openSlides(sp.dataset.sid); };
   li.querySelectorAll('a.tag').forEach((a) => { a.onclick = (e) => {
     if (li.classList.contains('selecting') || document.body.classList.contains('selecting')) return; // a tap while selecting ticks the row
     e.preventDefault(); showTag(a.dataset.tag);
@@ -114,12 +164,15 @@ async function renderSearch() {
   const t0 = performance.now();
   const admin = c.member.role === 'admin';
   const page = c.el(`<section class="card lib"><h1>Library</h1>
-    <form id="sf" role="search" class="row"><input id="q" type="search" aria-label="Search the library"
-      placeholder="Search titles, tags, notes and PDFs" autocomplete="off"></form>
+    <form id="sf" role="search" class="searchbox"><input id="q" type="search" aria-label="Search the library"
+      placeholder="Search, or try tag: author: year:" autocomplete="off" enterkeyhint="search" aria-autocomplete="list" aria-controls="sugg">
+      <button type="button" id="ssave" class="ssave" aria-label="Save this search" aria-pressed="false" hidden>${BOOKMARK}</button>
+      <ul id="sugg" class="sugg" role="listbox" aria-label="Suggestions" hidden></ul></form>
     <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a></p>
-    <div id="chips" class="chips" role="group" aria-label="Filters"></div>
-    <div id="lbar" class="listbar"><button type="button" id="sortb" class="plain" aria-haspopup="dialog" disabled><span id="count">Loading…</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
-      <button type="button" id="selb" class="link" disabled>Select</button></div>
+    <div id="chips" class="chips wrap" role="group" aria-label="Filters"></div>
+    <div id="lbar" class="listbar"><span id="count" class="count" aria-live="polite">Loading…</span>
+      <span class="lbtns"><button type="button" id="sortb" class="plain" aria-haspopup="dialog" aria-label="Sort" disabled><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>Sort</button>
+      <button type="button" id="selb" class="link" disabled>Select</button></span></div>
     <div id="selhead" class="selhead" hidden><button type="button" id="sback" class="link">‹ Back</button><strong id="scount" aria-live="polite"></strong>
       <span><button type="button" id="sall" class="link"></button><button type="button" id="snone" class="link">None</button></span></div>
     <p id="selnote" class="muted" hidden></p>
@@ -130,7 +183,8 @@ async function renderSearch() {
   const q = $in(page, '#q'), res = $in(page, '#res'), count = $in(page, '#count'), end = $in(page, '#end');
   q.value = ui.q;
   const tabbar = document.getElementById('tabbar');
-  const x = { starred: new Set(), indexed: null, recent: [] };
+  const x = { starred: new Set(), indexed: null, recent: [], uid: c.user.uid, slides: new Set() };
+  let parsed = parseQuery(ui.q), saved = [], fac = null;
 
   // First paint: the newest 50 saved on this device, else (first open here) a small query, while the catalogue loads.
   if (!current() || current().stale) {
@@ -163,14 +217,18 @@ async function renderSearch() {
   // Starred papers are kept for offline reading: fetch any not saved yet, quietly, once the full catalogue is here.
   real.then((full) => syncStarred(starred, full.papers, (id) => apiFetch(`/api/file/${id}`))).catch(() => {});
   let { papers } = cat;
+  // Session slides and saved searches arrive on their own and redraw what they change.
+  const slideIds = () => new Set([...papers].filter(([, p]) => slidesFor(p)).map(([id]) => id));
+  withTimeout(loadSlides(), 8000, 'slides').then((m) => { rowCtx.slides = m; if (!page.isConnected) return; x.slides = slideIds(); show(); }, why('slidesError'));
+  withTimeout(loadSearches(c.db, c.user.uid), 8000, 'searches').then((l) => { saved = l; if (page.isConnected) { drawChips(); drawSave(); } }, why('searchesError'));
   if (cat.partial) {
     real.then((full) => { if (page.isConnected && cat.partial) { cat = full; papers = full.papers; redraw(); } })
       .catch((e) => { why('loadError')(e); if (page.isConnected) count.title = `Library not refreshed: ${timing.loadError}`; });
   }
 
   let matchIds = [], info = new Map(), timer = 0, seq = 0, sel = null, mode = 'list';
-  const narrowed = () => !!ui.q || filterOn(ui.filter);
-  const ok = (id) => papers.has(id) && matches(id, papers.get(id), ui.filter, x);
+  const narrowed = () => !parsed.empty || filterOn(ui.filter);
+  const ok = (id) => papers.has(id) && matches(id, papers.get(id), ui.filter, x) && queryMatches(id, papers.get(id), parsed, x);
   const row = (id) => {
     const h = info.get(id) || {};
     const li = paperItem(id, papers.get(id), h.page, h.snippet);
@@ -203,43 +261,57 @@ async function renderSearch() {
   const setCount = (text) => { count.textContent = text; };
   const drawList = () => {
     mode = 'list'; info = new Map();
-    const entries = sortEntries([...papers].filter(([id, p]) => matches(id, p, ui.filter, x)), ui.sort, x);
+    const entries = sortEntries([...papers].filter(([id]) => ok(id)), ui.sort, x);
     matchIds = entries.map(([id]) => id);
     ui.shown = Math.max(ui.shown, PAGE);
     redrawRows();
     const more = cat.partial ? '+' : '';
     if (!papers.size) setCount(cat.partial ? 'Still loading the library…' : 'No papers yet. Add the first one.');
     else setCount(`${matchIds.length}${more} ${matchIds.length === 1 && !more ? 'paper' : 'papers'} · ${sortLabel(ui.sort)}`);
-    if (!cat.partial && !filterOn(ui.filter) && HEAD_SORT.has(ui.sort)) writeHead(entries);
+    if (!cat.partial && !narrowed() && HEAD_SORT.has(ui.sort)) writeHead(entries);
     drawSel();
   };
   const showHits = (hits, done) => {
     mode = 'search';
-    const kept = hits.filter((h) => ok(h.paperId));
+    let kept = hits.filter((h) => ok(h.paperId));
+    if (ui.searchSort !== 'relevance') {
+      const order = sortEntries(kept.map((h) => [h.paperId, papers.get(h.paperId)]), ui.searchSort, x).map(([id], i) => [id, i]);
+      const at = new Map(order);
+      kept = [...kept].sort((a, b) => at.get(a.paperId) - at.get(b.paperId));
+    }
     info = new Map(kept.map((h) => [h.paperId, h]));
     matchIds = kept.map((h) => h.paperId);
     ui.shown = PAGE;
     redrawRows();
-    setCount(kept.length ? `${kept.length} found${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…');
+    const by = ui.searchSort === 'relevance' ? '' : ` · ${sortLabel(ui.searchSort)}`;
+    setCount(kept.length ? `${kept.length} found${by}${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…');
     drawSel();
   };
+  // Free words search (metadata here, PDF text and notes on the Worker); operators and -words narrow either way.
+  // A box with operators only shows the narrowed list in the chosen sort.
   const show = () => {
     ui.q = q.value.trim();
+    parsed = parseQuery(ui.q);
+    rowCtx.words = parsed.words;
+    drawSave(); markChips();
     const mine = ++seq;
     clearTimeout(timer);
-    if (!ui.q) { drawList(); return; }
-    const local = searchPapers(cat.index, ui.q, (id) => discussedAt(papers.get(id) || {})).filter((h) => papers.has(h.paperId));
-    if (ui.q.length < 3) { showHits(local, true); return; }
+    if (!parsed.text) { drawList(); return; }
+    const local = searchPapers(cat.index, parsed, (id) => discussedAt(papers.get(id) || {}))
+      .filter((h) => papers.has(h.paperId) && phrasesMatch(papers.get(h.paperId), parsed));
+    const sq = serverQuery(parsed);
+    if (!sq || parsed.words.join('').length < 3) { showHits(local, true); return; }
     showHits(local, false);
     timer = setTimeout(async () => {
-      const server = await serverSearch(ui.q);
+      const server = await serverSearch(sq);
       if (mine !== seq || !page.isConnected) return;
-      const merged = mergeHits(local, server.hits, (id) => papers.has(id));
+      const where = parsed.scope === 'notes' ? (h) => h.page === 0 : parsed.scope === 'pdf' ? (h) => h.page > 0 : () => true;
+      const merged = mergeHits(local, server.hits.filter(where), (id) => papers.has(id));
       showHits(merged, true);
       if (server.down) setCount(`${merged.length ? `${merged.length} found. ` : ''}PDF search unavailable right now.`);
     }, 250);
   };
-  const redraw = () => { drawChips(); show(); };
+  const redraw = () => { fac = null; x.slides = slideIds(); drawChips(); show(); };
 
   // ---- Filter chips ----
   const chipsEl = $in(page, '#chips');
@@ -250,18 +322,59 @@ async function renderSearch() {
     b.onclick = onclick;
     return b;
   };
+  // The row: saved searches, All, Starred, Presented, any other filter that is on (tap to clear), then Filters.
+  const QUICK = new Set(['starred', 'presented']);
   function drawChips() {
     const n = chipCounts([...papers], x);
     const f = ui.filter;
-    const out = [chip('All', !filterOn(f), () => { ui.filter = emptyFilter(); redraw(); })];
+    const out = saved.map((sq) => {
+      const b = c.el(`<button type="button" class="chip saved">${BOOKMARK}<span></span></button>`);
+      b.querySelector('span').textContent = sq;
+      b.dataset.q = sq;
+      b.onclick = () => { const on = ui.q === sq; q.value = on ? '' : sq; show(); if (!on) rememberSearch(sq); };
+      return b;
+    });
+    const all = chip('All', false, () => { ui.filter = emptyFilter(); q.value = ''; redraw(); });
+    all.id = 'chipall';
+    out.push(all);
     for (const [k, label] of CHIPS) {
-      if (k === 'notIndexed' && (!x.indexed || (!n[k] && !f.chips.has(k)))) continue;
+      if (!QUICK.has(k) && !f.chips.has(k)) continue;
       out.push(chip(`${label} · ${n[k]}`, f.chips.has(k), () => { if (f.chips.has(k)) f.chips.delete(k); else f.chips.add(k); redraw(); }));
     }
-    out.push(chip(f.tag ? `Shared tag: ${f.tag}` : 'Shared tag ▾', !!f.tag, () => (f.tag ? (f.tag = null, redraw()) : tagSheet()), ' aria-haspopup="dialog"'));
+    if (f.tag) out.push(chip(`Shared tag: ${f.tag}`, true, () => { f.tag = null; redraw(); }));
     const yr = f.yearFrom != null || f.yearTo != null;
-    out.push(chip(yr ? `${f.yearFrom ?? '…'}–${f.yearTo ?? '…'}` : 'Year ▾', yr, () => (yr ? (f.yearFrom = f.yearTo = null, redraw()) : yearSheet()), ' aria-haspopup="dialog"'));
+    if (yr) out.push(chip(`${f.yearFrom ?? '…'}–${f.yearTo ?? '…'}`, true, () => { f.yearFrom = f.yearTo = null; redraw(); }));
+    const fb = chip('Filters', false, filterSheet, ' aria-haspopup="dialog"');
+    fb.append(c.el('<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>'));
+    out.push(fb);
     chipsEl.replaceChildren(...out);
+    markChips();
+  }
+  // Which saved search is in the box, and whether anything narrows the list (All), without redrawing the row.
+  function markChips() {
+    for (const b of chipsEl.querySelectorAll('.chip.saved')) { const on = b.dataset.q === ui.q; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); }
+    const all = chipsEl.querySelector('#chipall');
+    if (all) { const on = !filterOn(ui.filter) && parsed.empty; all.classList.toggle('on', on); all.setAttribute('aria-pressed', String(on)); }
+  }
+  // Every filter with its count, tag and year pickers, and the search tips (a tap puts the operator in the box).
+  function filterSheet() {
+    const d = sheet(c, 'Filters', `<h2 class="sheet-title">Filters</h2><div class="chips wrap" id="fc"></div>
+      <div class="chips wrap"><button type="button" class="chip" id="ftag">Shared tag…</button><button type="button" class="chip" id="fyear">Year…</button></div>
+      <h3 class="sheet-h">Search tips</h3><ul class="list help" id="fhelp"></ul>`);
+    const fill = () => {
+      const n = chipCounts([...papers], x);
+      d.querySelector('#fc').replaceChildren(...CHIPS.filter(([k]) => k !== 'notIndexed' || x.indexed).map(([k, label]) =>
+        chip(`${label} · ${n[k]}`, ui.filter.chips.has(k), () => { if (ui.filter.chips.has(k)) ui.filter.chips.delete(k); else ui.filter.chips.add(k); redraw(); fill(); })));
+    };
+    fill();
+    d.querySelector('#ftag').onclick = () => { d.close(); tagSheet(); };
+    d.querySelector('#fyear').onclick = () => { d.close(); yearSheet(); };
+    for (const [ex, what, ins] of HELP) {
+      const li = c.el('<li><button type="button" class="help-row"><code></code><span class="muted"></span></button></li>');
+      li.querySelector('code').textContent = ex; li.querySelector('span').textContent = what;
+      li.querySelector('button').onclick = () => { d.close(); insertText(ins); };
+      d.querySelector('#fhelp').append(li);
+    }
   }
   function tagSheet() {
     const tags = tagCounts([...papers]);
@@ -284,14 +397,18 @@ async function renderSearch() {
   }
 
   // ---- Sort and view ----
+  // While searching, the order of the hits (best match first unless chosen); otherwise the list's saved order.
   $in(page, '#sortb').onclick = () => {
-    const d = sheet(c, 'Sort', `<h2 class="sheet-title">Sort by</h2><ul class="list">${SORTS.map(([k, l]) => `<li><label class="check-row">
-      <input type="radio" name="sort" value="${k}"${k === ui.sort ? ' checked' : ''}><span class="grow">${l}</span></label></li>`).join('')}</ul>
+    const searching = parsed.text;
+    const cur = searching ? ui.searchSort : ui.sort;
+    const opts = searching ? [['relevance', 'Best match'], ...SORTS] : SORTS;
+    const d = sheet(c, 'Sort', `<h2 class="sheet-title">Sort by</h2><ul class="list">${opts.map(([k, l]) => `<li><label class="check-row">
+      <input type="radio" name="sort" value="${k}"${k === cur ? ' checked' : ''}><span class="grow">${l}</span></label></li>`).join('')}</ul>
       <ul class="list"><li><label class="check-row"><input type="checkbox" id="sauth"${showAuthors() ? ' checked' : ''}><span class="grow">Show authors</span></label></li></ul>`);
     d.querySelectorAll('input[name=sort]').forEach((r) => { r.onchange = () => {
-      ui.sort = r.value;
-      try { localStorage.setItem(SORT_KEY, ui.sort); } catch { /* private */ }
-      d.close(); ui.q = ''; q.value = ''; show();
+      if (searching) ui.searchSort = r.value;
+      else { ui.sort = r.value; try { localStorage.setItem(SORT_KEY, ui.sort); } catch { /* private */ } }
+      d.close(); show();
     }; });
     d.querySelector('#sauth').onchange = (e) => { try { localStorage.setItem(AUTHORS_KEY, e.target.checked ? '1' : '0'); } catch { /* private */ } redrawRows(); };
   };
@@ -394,8 +511,99 @@ async function renderSearch() {
   const offJob = onJob(drawJob);
   drawJob();
 
-  q.oninput = show;
-  $in(page, '#sf').onsubmit = (e) => { e.preventDefault(); q.blur(); };
+  // ---- Suggestions under the box: saved and recent searches and tips when empty; tags, authors, journals,
+  // operator values while typing. Arrow keys move, Enter or a tap takes one. ----
+  const sugg = $in(page, '#sugg'), ssave = $in(page, '#ssave');
+  let items = [], active = -1;
+  const facetsNow = () => fac || (fac = facets([...papers]));
+  function insertText(ins) {
+    const v = q.value;
+    const t = lastToken(v);
+    const base = t.partial || t.field ? v.slice(0, t.start) : v.replace(/\S$/, '$& ');
+    q.value = base + ins;
+    q.focus(); show(); drawSugg();
+  }
+  function take(it) {
+    if (it.whole != null) { q.value = it.whole; rememberSearch(it.whole); q.blur(); show(); drawChips(); return; }
+    if (it.help != null) { insertText(it.help); return; }
+    const v = q.value;
+    q.value = v.slice(0, lastToken(v).start) + it.insert;
+    q.focus(); show(); drawSugg();
+  }
+  function drawSugg() {
+    if (document.activeElement !== q || sel) { sugg.hidden = true; return; }
+    const v = q.value;
+    if (!v.trim()) {
+      items = [...saved.map((x2) => ({ label: x2, hint: 'Saved', whole: x2, saved: true })),
+        ...recentSearches().filter((x2) => !saved.includes(x2)).slice(0, 5).map((x2) => ({ label: x2, hint: 'Recent', whole: x2 })),
+        ...HELP.slice(0, saved.length || recentSearches().length ? 3 : 6).map(([ex, what, ins]) => ({ label: ex, hint: what, help: ins, tip: true }))];
+    } else items = suggest(v, facetsNow(), 8);
+    active = -1;
+    sugg.replaceChildren(...items.map((it, i) => {
+      const li = c.el(`<li role="option" id="sg${i}" class="${it.tip ? 'tip' : ''}"><span class="sl"></span><span class="sh muted"></span></li>`);
+      li.querySelector('.sl').textContent = it.label; li.querySelector('.sh').textContent = it.hint || '';
+      if (it.saved) {
+        const rm = c.el('<button type="button" class="link sx" aria-label="Remove this saved search">×</button>');
+        rm.onclick = async (e) => { e.stopPropagation(); saved = await setSearchSaved(c.db, c.user.uid, it.whole, false).catch(() => saved); drawChips(); drawSave(); drawSugg(); };
+        li.append(rm);
+      }
+      li.onclick = () => take(it);
+      return li;
+    }));
+    sugg.hidden = !items.length;
+    q.setAttribute('aria-expanded', String(!sugg.hidden));
+  }
+  const moveTo = (i) => {
+    active = (i + items.length) % items.length;
+    sugg.querySelectorAll('li').forEach((li, k) => li.classList.toggle('active', k === active));
+    q.setAttribute('aria-activedescendant', `sg${active}`);
+  };
+  sugg.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard up while tapping a suggestion
+  function drawSave() {
+    if (!ssave) return;
+    const on = !!ui.q && saved.includes(ui.q);
+    ssave.hidden = !ui.q;
+    ssave.classList.toggle('on', on);
+    ssave.setAttribute('aria-pressed', String(on));
+    ssave.setAttribute('aria-label', on ? 'Remove this saved search' : 'Save this search');
+  }
+  ssave.onclick = async () => {
+    const v = ui.q;
+    if (!v) return;
+    const on = !saved.includes(v);
+    try { saved = await setSearchSaved(c.db, c.user.uid, v, on); } catch { snack(c, 'Could not save the search.'); return; }
+    drawChips(); drawSave();
+    snack(c, on ? 'Search saved: it is a chip above the list.' : 'Saved search removed.');
+  };
+
+  q.oninput = () => { show(); drawSugg(); };
+  q.onfocus = drawSugg;
+  // The panel is in the flow above the list: closing it mid-tap would move the row under the finger, so a tap
+  // elsewhere closes it only once the finger lifts.
+  let down = false;
+  const onDown = () => { down = true; }, onUp = () => { down = false; };
+  document.addEventListener('pointerdown', onDown, true);
+  document.addEventListener('pointerup', onUp, true);
+  document.addEventListener('pointercancel', onUp, true);
+  const close = () => { sugg.hidden = true; q.setAttribute('aria-expanded', 'false'); };
+  q.onblur = () => {
+    if (!parsed.empty) rememberSearch(ui.q);
+    if (!down) { close(); return; }
+    const later = () => { document.removeEventListener('click', later, true); setTimeout(() => { if (document.activeElement !== q) close(); }, 0); };
+    document.addEventListener('click', later, true);
+    setTimeout(later, 600); // no click after all (a scroll or a long press)
+  };
+  window.addEventListener('hashchange', () => {
+    document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('pointerup', onUp, true); document.removeEventListener('pointercancel', onUp, true);
+  }, { once: true });
+  q.onkeydown = (e) => {
+    if (sugg.hidden || !items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveTo(active + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveTo(active - 1); }
+    else if (e.key === 'Escape') { sugg.hidden = true; }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && active >= 0) { e.preventDefault(); take(items[active]); }
+  };
+  $in(page, '#sf').onsubmit = (e) => { e.preventDefault(); if (!parsed.empty) rememberSearch(ui.q); q.blur(); };
   drawChips();
   $in(page, '#sortb').disabled = false; $in(page, '#selb').disabled = false; // wired up now the catalogue is here
   if (ui.pendingSel) { sel = new Set(ui.pendingSel); ui.pendingSel = null; }
@@ -627,7 +835,11 @@ async function renderPaper(id, hitPage) {
     jc.replaceChildren();
     sessions.forEach((s, i) => {
       const when = s.date.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-      const box = c.el(`<div class="jc-session"><p><a href="#/session/${c.esc(s.id)}">${c.esc(when)}</a> <span class="muted">Presenter: ${c.esc(s.presenterName || '—')}</span></p></div>`);
+      const link = s.slidesFile?.pdf ? `<button type="button" class="pdf-pill slides-pill" data-sid="${c.esc(s.id)}">${SLIDES_ICON}Slides</button>`
+        : safeUrl(s.slides) ? `<a class="pdf-pill" href="${c.esc(safeUrl(s.slides))}" target="_blank" rel="noopener">${SLIDES_ICON}Slides</a>` : '';
+      const box = c.el(`<div class="jc-session"><p><a href="#/session/${c.esc(s.id)}">${c.esc(when)}</a> <span class="muted">Presenter: ${c.esc(s.presenterName || '—')}</span>${link ? ` ${link}` : ''}</p></div>`);
+      const sb = box.querySelector('.slides-pill');
+      if (sb) sb.onclick = () => openSlides(s.id);
       const texts = pts[i].docs.map((d) => d.data().text).filter(Boolean);
       if (texts.length) { const ul = c.el('<ul class="list"></ul>'); texts.forEach((t) => ul.append(c.el(`<li><span>${c.esc(t)}</span></li>`))); box.append(ul); }
       jc.append(box);

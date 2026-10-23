@@ -197,8 +197,11 @@ service cloud.firestore {
       allow read: if isMember() && request.auth.uid == uid;
       allow write: if isMember() && request.auth.uid == uid
         && (request.method == 'delete' || (
-          request.resource.data.keys().hasOnly(['recent', 'updatedAt'])
-          && request.resource.data.recent is list && request.resource.data.recent.size() <= 20
+          request.resource.data.keys().hasOnly(['recent', 'searches', 'updatedAt'])
+          && (!('recent' in request.resource.data)
+            || (request.resource.data.recent is list && request.resource.data.recent.size() <= 20))
+          && (!('searches' in request.resource.data)
+            || (request.resource.data.searches is list && request.resource.data.searches.size() <= 20))
           && request.resource.data.updatedAt == request.time));
     }
 

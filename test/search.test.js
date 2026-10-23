@@ -57,6 +57,9 @@ test('query words become quoted prefix terms; punctuation cannot break out', () 
   assert.equal(ftsQuery('Sugammadex, rocuronium!'), '"sugammadex"* "rocuronium"*');
   assert.equal(ftsQuery('" OR 1=1 --'), '"or"* "1"*');
   assert.equal(ftsQuery('  '), null);
+  assert.equal(ftsQuery('sugammadex OR neostigmine reversal'), '("sugammadex"* OR "neostigmine"*) "reversal"*');
+  assert.equal(ftsQuery('"post dural" -spinal'), '("post dural") NOT ("spinal"*)');
+  assert.equal(ftsQuery('-only'), null);
   assert.equal(cleanPages(['a', 3]), null);
   assert.deepEqual(cleanPages([' a\n b ']), ['a b']);
 });

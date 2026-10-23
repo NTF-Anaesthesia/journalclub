@@ -1,4 +1,4 @@
-import { test, expect, PROJECT, DOCS, BASE } from './emu.js';
+import { test, expect, PROJECT, DOCS, BASE, pickFilter, filterCount } from './emu.js';
 import { workerApi } from './worker-api.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
@@ -62,7 +62,7 @@ test('admin: filter No abstract, long-press, All, Refresh touches only those; PD
   files.set('papers/f1.pdf', makePdf('Quokkastatin halves nausea'));
   await open(page);
 
-  await page.getByRole('button', { name: 'No abstract · 3' }).click();
+  await pickFilter(page, 'No abstract · 3');
   await expect(page.locator('#res li')).toHaveCount(3);
   await longPress(page, page.locator('#res li').first());
   await expect(page.locator('#scount')).toHaveText('1 selected');
@@ -87,7 +87,7 @@ test('admin: filter No abstract, long-press, All, Refresh touches only those; PD
   await expect(page.getByRole('link', { name: 'Has abstract already' })).toBeVisible();
 
   // PDF not indexed: a PDF with no pages in D1; Reindex reads it again and search finds its words.
-  await page.getByRole('button', { name: 'PDF not indexed · 1' }).click();
+  await pickFilter(page, 'PDF not indexed · 1');
   await expect(page.locator('#res li')).toHaveCount(1);
   await page.getByRole('button', { name: 'Select', exact: true }).click();
   await page.getByRole('button', { name: 'All 1' }).click();
@@ -165,9 +165,10 @@ test('member: sort by year, star on one device and see it in Saved on another, f
   await sheetA.getByLabel('Find or create a list or tag').fill('exam');
   await sheetA.getByRole('button', { name: '+ New shared tag “exam”' }).click();
   await sheetA.getByRole('button', { name: 'Save' }).click();
-  await expect(a.getByRole('button', { name: 'Untagged · 0' })).toBeVisible();
+  await expect(a.locator('.snack').getByRole('button', { name: 'Undo' })).toBeVisible();
+  await filterCount(a, 'Untagged · 0');
   await a.locator('.snack').getByRole('button', { name: 'Undo' }).click();
-  await expect(a.getByRole('button', { name: /^Untagged · [1-9]/ })).toBeVisible();
+  await filterCount(a, /^Untagged · [1-9]/);
   await ctxB.close();
   await a.close();
 });

@@ -1,5 +1,6 @@
 import MiniSearch from 'minisearch';
 import { decodeEntities } from './abstract.js';
+import { parseQuery, miniQuery, MINI_FIELDS } from './query.js';
 
 // Metadata only (title, authors, journal, tags, why, abstract), built on the phone over the cached catalogue.
 // PDF pages and notes are searched by the Worker (GET /api/search); mergeHits joins the two.
@@ -24,11 +25,16 @@ export function updateIndex(ms, id, p) {
   if (p) ms.add(indexDoc(id, p));
 }
 
-// Results best first: { paperId, page, snippet }.
-// `at(id)` is when the paper was last discussed: it breaks ties between equally relevant hits (newest first).
+// Results best first: { paperId, page, snippet }. `q` is the box text or a parseQuery() result (free words only:
+// operators and excluded words are applied by the caller). `at(id)` is when the paper was last discussed: it breaks
+// ties between equally relevant hits (newest first).
 export function searchPapers(ms, q, at = () => 0) {
+  const parsed = typeof q === 'string' ? parseQuery(q) : q;
+  const mq = miniQuery(parsed);
+  if (!mq || parsed.scope === 'pdf' || parsed.scope === 'notes') return [];
   const key = (r) => Math.round(r.score * 1e6);
-  return ms.search(q).map((r, i) => ({ r, i })).sort((a, b) => key(b.r) - key(a.r) || at(b.r.id) - at(a.r.id) || a.i - b.i)
+  const opts = MINI_FIELDS[parsed.scope] ? { fields: MINI_FIELDS[parsed.scope] } : {};
+  return ms.search(mq, opts).map((r, i) => ({ r, i })).sort((a, b) => key(b.r) - key(a.r) || at(b.r.id) - at(a.r.id) || a.i - b.i)
     .map(({ r }) => ({ paperId: r.id, page: null, snippet: null }));
 }
 
