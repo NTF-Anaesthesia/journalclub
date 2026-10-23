@@ -187,6 +187,10 @@ test('sessions: any member plans one as themselves; creator, presenter, coordina
   await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { summary: 'Key points', slides: 'https://example.org/s' }));
   await assertSucceeds(updateDoc(doc(m3, 'sessions/s1'), { coordinatorName: 'M3 renamed' }));
   await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slides: 'javascript:alert(1)' }));
+  await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'Talk.pptx', size: 1200, kind: 'pptx', pdf: true }, slides: '' }));
+  await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: {} }));
+  await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'x.exe', size: 1, kind: 'exe', pdf: false } }));
+  await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'x.pdf', size: 1, kind: 'pdf', pdf: true, url: 'https://x' } }));
   // Locking and the form override stay with admins.
   await assertFails(updateDoc(doc(m2, 'sessions/s1'), { locked: true }));
   await assertFails(updateDoc(doc(m2, 'sessions/s1'), { template: [] }));

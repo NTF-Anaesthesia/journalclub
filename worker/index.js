@@ -6,6 +6,7 @@
 // member's own row (and a paper) from the Firestore REST API with that token, so Firestore checks the
 // token and the rules decide, exactly as in the browser.
 import { lookup } from './lookup.js';
+import { MAX_SLIDES, pullUrls, pull, storeSlides, serveSlides, deleteSlides } from './slides.js';
 
 const AUTH_HELPER = 'https://journalclub-anantf.firebaseapp.com';
 const FIRESTORE = 'https://firestore.googleapis.com/v1/projects/journalclub-anantf/databases/(default)/documents';
@@ -39,9 +40,46 @@ export async function memberFrom(request, fetchFn) {
   return { uid, token, role: field(doc, 'role') };
 }
 
-async function paperAs(member, paperId, fetchFn) {
-  const r = await fetchFn(`${FIRESTORE}/papers/${paperId}`, { headers: { Authorization: `Bearer ${member.token}` } });
+async function docAs(member, path, fetchFn) {
+  const r = await fetchFn(`${FIRESTORE}/${path}`, { headers: { Authorization: `Bearer ${member.token}` } });
   return r.ok ? r.json() : null;
+}
+const paperAs = (member, paperId, fetchFn) => docAs(member, `papers/${paperId}`, fetchFn);
+
+// Slides: any member reads them; the session's creator, presenter, coordinator and admins change them until it is locked.
+async function slidesApi(request, env, member, sid, which, fetchFn) {
+  if (!env.FILES) return json({ error: 'File storage is not set up yet' }, 503);
+  if (request.method === 'GET' && (which === 'pdf' || which === 'original')) return serveSlides(env, sid, which);
+  if (which) return json({ error: 'Not found' }, 404);
+  const s = await docAs(member, `sessions/${sid}`, fetchFn);
+  if (!s) return json({ error: 'No such session' }, 404);
+  const mine = [field(s, 'createdBy'), field(s, 'presenterUid'), field(s, 'coordinatorUid')].includes(member.uid);
+  if (!(member.role === 'admin' || (mine && !field(s, 'locked')))) {
+    return json({ error: 'Only the creator, presenter, coordinator or an admin can change the slides' }, 403);
+  }
+  if (request.method === 'DELETE') { await deleteSlides(env, sid); return json({ ok: true }); }
+  if (request.method === 'PUT') {
+    if (Number(request.headers.get('Content-Length') || 0) > MAX_SLIDES) return json({ error: 'Slides are over 50 MB' }, 413);
+    const body = await request.arrayBuffer();
+    if (body.byteLength > MAX_SLIDES) return json({ error: 'Slides are over 50 MB' }, 413);
+    let name = 'slides';
+    try { name = decodeURIComponent(request.headers.get('X-File-Name') || 'slides'); } catch { /* keep the default */ }
+    const out = await storeSlides(env, sid, member.uid, body, name, fetchFn);
+    return json(out.body, out.status);
+  }
+  if (request.method === 'POST') {
+    const { url } = await request.json().catch(() => ({}));
+    const src = pullUrls(String(url || ''));
+    if (!src) return json({ error: 'The link must start with https://' }, 400);
+    const got = await pull(src.file, fetchFn);
+    if (got?.tooBig) return json({ error: 'Slides are over 50 MB' }, 413);
+    const cannot = 'Could not pull the slides from that link. Share it as "Anyone with the link can view", or upload the file.';
+    if (!got) return json({ error: cannot }, 422);
+    const pdf = src.pdf ? await pull(src.pdf, fetchFn) : null;
+    const out = await storeSlides(env, sid, member.uid, got.buf, src.name || got.name, fetchFn, pdf?.buf);
+    return out.status === 415 ? json({ error: cannot }, 422) : json(out.body, out.status);
+  }
+  return json({ error: 'Method not allowed' }, 405);
 }
 
 export async function api(request, env, fetchFn = fetch) {
@@ -54,6 +92,9 @@ export async function api(request, env, fetchFn = fetch) {
     const out = await lookup(url.searchParams.get('id'), fetchFn, email);
     return json(out, out.error ? 404 : 200);
   }
+
+  const sl = /^\/api\/slides\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original))?$/.exec(url.pathname);
+  if (sl) return slidesApi(request, env, member, sl[1], sl[2], fetchFn);
 
   const m = /^\/api\/file\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
   if (!m) return json({ error: 'Not found' }, 404);

@@ -136,7 +136,7 @@ service cloud.firestore {
     }
 
     // Journal club sessions: any member plans one (and is its creator); the creator, the presenter, a member
-    // coordinator and admins edit the plan and fill in the summary, slides and discussion until it is locked.
+    // coordinator and admins edit the plan and fill in the summary, slides (slidesFile) and discussion until it is locked.
     // Only admins lock a session or change its discussion-form override; admins and the creator delete it.
     function sessionOk(d) {
       return d.date is timestamp
@@ -151,7 +151,14 @@ service cloud.firestore {
         && d.get('locked', false) is bool
         && d.get('template', []) is list && d.get('template', []).size() <= 30
         && d.get('discussion', {}) is map
-        && d.get('discussion', {}).keys().hasOnly(['fields', 'answers']);
+        && d.get('discussion', {}).keys().hasOnly(['fields', 'answers'])
+        && d.get('slidesFile', {}) is map && slidesFileOk(d.get('slidesFile', {}));
+    }
+    // The uploaded slides (stored in R2 by the Worker): {} once removed.
+    function slidesFileOk(f) {
+      return f.keys().hasOnly(['name', 'size', 'kind', 'pdf'])
+        && f.get('name', '') is string && f.get('name', '').size() <= 200
+        && f.get('size', 0) is int && f.get('kind', 'pdf') in ['pdf', 'pptx', 'ppt'] && f.get('pdf', false) is bool;
     }
     function mayPlan(d) {
       return isMember() && !d.get('locked', false)
@@ -169,11 +176,11 @@ service cloud.firestore {
       allow update: if sessionOk(request.resource.data) && (
         (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'paperId', 'paperTitle',
            'presenterUid', 'presenterName', 'summary', 'slides', 'coordinatorUid', 'coordinatorName', 'time',
-           'teamsUrl', 'template', 'locked', 'discussion']))
+           'teamsUrl', 'template', 'locked', 'discussion', 'slidesFile']))
         || (mayPlan(resource.data)
            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'paperId', 'paperTitle',
               'presenterUid', 'presenterName', 'summary', 'slides', 'coordinatorUid', 'coordinatorName', 'time',
-              'teamsUrl', 'discussion'])));
+              'teamsUrl', 'discussion', 'slidesFile'])));
       allow delete: if isAdmin() || (isMember() && resource.data.get('createdBy', '') == request.auth.uid);
 
       // One take-home point per member per session; read-only once the session is locked.
