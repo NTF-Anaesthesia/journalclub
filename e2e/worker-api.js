@@ -4,6 +4,7 @@
 import { api } from '../worker/index.js';
 import { fixtureFetch } from '../test/fixture-fetch.js';
 import { localD1 } from '../test/d1.js';
+import { r2Stub } from '../test/r2-stub.js';
 
 const LIVE = 'https://firestore.googleapis.com/v1/projects/journalclub-anantf/';
 
@@ -16,12 +17,8 @@ export function fakeAi(response = 'A short neutral summary of this handout: it l
 export async function workerApi(page, project = 'demo-jc', { ai = fakeAi() } = {}) {
   const EMU = `http://127.0.0.1:8080/v1/projects/${project}/`;
   const d1 = await localD1();
-  const store = new Map();
-  const FILES = {
-    async get(k) { return store.has(k) ? { body: store.get(k) } : null; },
-    async put(k, v) { store.set(k, v); },
-    async delete(k) { store.delete(k); },
-  };
+  const FILES = r2Stub();
+  const store = FILES.store;
   const lookups = fixtureFetch();
   const fetchFn = (url, init) => (String(url).startsWith(LIVE) ? fetch(String(url).replace(LIVE, EMU), init) : lookups(url, init));
   const calls = [];
