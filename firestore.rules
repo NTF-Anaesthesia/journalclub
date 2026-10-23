@@ -79,8 +79,18 @@ service cloud.firestore {
             && request.resource.data.rating is int && request.resource.data.rating >= 0 && request.resource.data.rating <= 5
             && request.resource.data.updatedAt == request.time));
       }
+
+      // Journal club votes: one per member per paper. No update, so a vote can't be cast twice; delete undoes it.
+      match /votes/{uid} {
+        allow create: if isMember() && request.auth.uid == uid
+          && exists(/databases/$(database)/documents/papers/$(pid))
+          && request.resource.data.keys().hasOnly(['at'])
+          && request.resource.data.at == request.time;
+        allow delete: if isMember() && request.auth.uid == uid;
+      }
     }
     match /{path=**}/notes/{uid} { allow read: if isMember(); }
+    match /{path=**}/votes/{uid} { allow read: if isMember(); }
 
     // PDF text per page, written at upload by whoever may edit the paper.
     match /texts/{pid} {
@@ -102,6 +112,41 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'about', 'paperIds'])
         && request.resource.data.paperIds is list && request.resource.data.paperIds.size() <= 500;
       allow delete: if isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid);
+    }
+
+    // Presenter rota: members read it, only admins change it.
+    match /rota/{rid} {
+      allow read: if isMember();
+      allow write: if isAdmin()
+        && (request.method == 'delete' || (
+          request.resource.data.keys().hasOnly(['order', 'next', 'updatedBy', 'updatedAt'])
+          && request.resource.data.order is list && request.resource.data.order.size() <= 300
+          && request.resource.data.next is int && request.resource.data.next >= 0
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedAt == request.time));
+    }
+
+    // Journal club sessions: admins plan them; the presenter fills in the summary and slides link.
+    function sessionOk(d) {
+      return d.date is timestamp
+        && d.paperId is string && d.paperTitle is string && d.presenterUid is string && d.presenterName is string
+        && d.summary is string && d.summary.size() <= 8000
+        && d.slides is string && d.slides.matches('(https://[^ "<>]+)?');
+    }
+    match /sessions/{sid} {
+      allow read: if isMember();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['date', 'paperId', 'paperTitle', 'presenterUid', 'presenterName',
+             'summary', 'slides', 'createdBy', 'createdAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && sessionOk(request.resource.data);
+      allow update: if sessionOk(request.resource.data) && (
+        (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'paperId', 'paperTitle',
+           'presenterUid', 'presenterName', 'summary', 'slides']))
+        || (isMember() && resource.data.presenterUid == request.auth.uid
+           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['summary', 'slides'])));
+      allow delete: if isAdmin();
     }
 
     match /{document=**} { allow read, write: if false; }

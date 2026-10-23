@@ -28,3 +28,5 @@ a.button.primary { background:var(--accent); color:#fff; } @media (prefers-color
 .tag { display:inline-block; font-size:.8rem; padding:1px 8px; border-radius:999px; border:1px solid var(--line); margin:2px 2px 0 0; }
 .hit { font-weight:600; color:var(--accent); }
 h1, h2, a { overflow-wrap:anywhere; } .abstract { white-space:pre-line; } details summary { cursor:pointer; padding:6px 0; }
+.list li.vote > span:first-child { flex:1 1 200px; } .count { font-weight:600; min-width:2ch; text-align:right; }
+.next { font-size:1.05rem; } ol.list { padding:0; }

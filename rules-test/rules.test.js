@@ -159,3 +159,45 @@ test('reading lists: members create; only the maker or an admin edits', async ()
   await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'lists/l1')));
   await assertSucceeds(deleteDoc(doc(as('mem1', 'm@x.org'), 'lists/l1')));
 });
+
+test('a member votes once per paper, only as themselves, and can undo it', async () => {
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1')));
+  const vote = () => ({ at: serverTimestamp() });
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/votes/mem1'), vote()));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/votes/mem1'), vote()));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/votes/admin1'), vote()));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/nope/votes/mem1'), vote()));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'papers/p1/votes/nobody'), vote()));
+  await assertSucceeds(getDocs(collectionGroup(as('admin1', 'a@x.org'), 'votes')));
+  await assertFails(getDocs(collectionGroup(stranger(), 'votes')));
+  await assertFails(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/votes/mem1')));
+  await assertSucceeds(deleteDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/votes/mem1')));
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/votes/mem1'), vote()));
+});
+
+test('only admins edit the rota; members read it', async () => {
+  const rota = (uid) => ({ order: [{ uid: 'mem1', name: 'M' }], next: 0, updatedBy: uid, updatedAt: serverTimestamp() });
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'rota/main'), rota('mem1')));
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'rota/main'), rota('admin1')));
+  await assertSucceeds(getDoc(doc(as('mem1', 'm@x.org'), 'rota/main')));
+  await assertFails(getDoc(doc(as('nobody', 'n@x.org'), 'rota/main')));
+  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'rota/main'), { next: 1 }));
+  await assertFails(deleteDoc(doc(as('mem1', 'm@x.org'), 'rota/main')));
+});
+
+test('sessions: admins plan; the presenter edits only summary and slides', async () => {
+  const session = (uid) => ({ date: future(), paperId: 'p1', paperTitle: 'T', presenterUid: 'mem1', presenterName: 'M',
+    summary: '', slides: '', createdBy: uid, createdAt: serverTimestamp() });
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1'), session('mem1')));
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'sessions/s1'), session('admin1')));
+  await assertSucceeds(getDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1')));
+  await assertFails(getDoc(doc(stranger(), 'sessions/s1')));
+  await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1'), { summary: 'Key points', slides: 'https://example.org/s' }));
+  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1'), { slides: 'javascript:alert(1)' }));
+  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1'), { presenterUid: 'admin1' }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'sessions/s1'), { summary: 'not mine' }));
+  await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'sessions/s1'), { presenterUid: 'mem2', presenterName: 'M2' }));
+  await assertFails(deleteDoc(doc(as('mem1', 'm@x.org'), 'sessions/s1')));
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'sessions/s1')));
+});

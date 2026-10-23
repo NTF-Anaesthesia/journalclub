@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
+import { renderClubRoute, CLUB_ROUTES } from './club.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
 // On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.
@@ -63,14 +64,16 @@ function render() {
   if (!user) return renderSignedOut();
   if (!member) return renderNotMember();
   if (r.name === 'admin') return member.role === 'admin' ? renderAdmin() : renderDenied();
-  if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, { db, user, member, view, el, esc });
-  return renderLibraryRoute({ name: 'library' }, { db, user, member, view, el, esc });
+  const ctx = { db, user, member, view, el, esc };
+  if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, ctx);
+  if (CLUB_ROUTES.includes(r.name)) return renderClubRoute(r, ctx);
+  return renderClubRoute({ name: 'home' }, ctx);
 }
 
 function renderBar() {
   const bar = $('#bar');
   if (!user) { bar.replaceChildren(); return; }
-  const nav = member ? '<a href="#/">Library</a> <a href="#/lists">Lists</a>' : '';
+  const nav = member ? '<a href="#/">Home</a> <a href="#/library">Library</a> <a href="#/lists">Lists</a> <a href="#/vote">Vote</a> <a href="#/sessions">Sessions</a>' : '';
   const admin = member?.role === 'admin' ? '<a href="#/admin">Admin</a>' : '';
   bar.replaceChildren(el(`<nav>${nav} ${admin} <span class="muted who">${esc(user.email)}</span> <button id="out" class="link">Sign out</button></nav>`));
   $('#out').onclick = () => signOut(auth);
