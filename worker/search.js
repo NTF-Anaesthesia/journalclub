@@ -1,9 +1,20 @@
-// PDF full-text search in D1 (binding SEARCH, database journalclub-search): one FTS5 row per PDF page,
-// plus page 0 for the paper's member notes. The client sends the pages it extracted at upload; the
-// Worker answers GET /api/search with paper ids, the best page and a short snippet.
+// PDF full-text search in D1 (binding SEARCH, database journalclub-search): one row per PDF page in page_text,
+// plus page 0 for the paper's member notes, with an external-content FTS5 index (page_fts) over it. page_text is
+// indexed on (paper, page) so a per-paper read or delete touches only that paper's rows; `indexed` holds one row
+// per paper with PDF pages, so /api/indexed reads one row per paper. Triggers keep both in step with page_text.
+// The Worker answers GET /api/search with paper ids, the best page and a short snippet.
 //
-// D1 caps a statement at 100 bound values, so rows go in 30 at a time.
-const SCHEMA = "CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5(paper UNINDEXED, page UNINDEXED, text, tokenize='porter unicode61 remove_diacritics 2')";
+// D1 caps a statement at 100 bound values, so rows go in 30 at a time. D1 exec() runs one statement per line, so
+// the schema goes through batch() instead.
+const TOKENIZE = "tokenize='porter unicode61 remove_diacritics 2'";
+export const SCHEMA = [
+  'CREATE TABLE IF NOT EXISTS page_text (id INTEGER PRIMARY KEY, paper TEXT NOT NULL, page INTEGER NOT NULL, text TEXT NOT NULL)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS page_text_paper_page ON page_text (paper, page)',
+  `CREATE VIRTUAL TABLE IF NOT EXISTS page_fts USING fts5(text, content='page_text', content_rowid='id', ${TOKENIZE})`,
+  'CREATE TABLE IF NOT EXISTS indexed (paper TEXT PRIMARY KEY) WITHOUT ROWID',
+  "CREATE TRIGGER IF NOT EXISTS page_text_ai AFTER INSERT ON page_text BEGIN INSERT INTO page_fts (rowid, text) VALUES (new.id, new.text); INSERT OR IGNORE INTO indexed (paper) SELECT new.paper WHERE new.page > 0; END",
+  "CREATE TRIGGER IF NOT EXISTS page_text_ad AFTER DELETE ON page_text BEGIN INSERT INTO page_fts (page_fts, rowid, text) VALUES ('delete', old.id, old.text); DELETE FROM indexed WHERE paper = old.paper AND NOT EXISTS (SELECT 1 FROM page_text WHERE paper = old.paper AND page > 0); END",
+];
 const ROWS_PER_INSERT = 30;
 export const PAGE_MAX = 20000;
 export const PAGES_MAX = 2000;
@@ -12,7 +23,7 @@ export const MARK = ['\u0002', '\u0003']; // snippet hit markers; the client esc
 
 let ready = null;
 export function ensureSchema(db) {
-  ready = ready || db.exec(SCHEMA).catch((e) => { ready = null; throw e; });
+  ready = ready || db.batch(SCHEMA.map((q) => db.prepare(q))).catch((e) => { ready = null; throw e; });
   return ready;
 }
 export const resetSchemaCache = () => { ready = null; };
@@ -21,7 +32,7 @@ function inserts(db, paperId, rows) {
   const out = [];
   for (let i = 0; i < rows.length; i += ROWS_PER_INSERT) {
     const chunk = rows.slice(i, i + ROWS_PER_INSERT);
-    out.push(db.prepare(`INSERT INTO pages (paper, page, text) VALUES ${chunk.map(() => '(?, ?, ?)').join(', ')}`)
+    out.push(db.prepare(`INSERT INTO page_text (paper, page, text) VALUES ${chunk.map(() => '(?, ?, ?)').join(', ')}`)
       .bind(...chunk.flatMap(([page, text]) => [paperId, page, text])));
   }
   return out;
@@ -40,7 +51,7 @@ export function cleanPages(pages) {
 export async function indexPages(db, paperId, pages) {
   await ensureSchema(db);
   const rows = pages.map((t, i) => [i + 1, t]).filter(([, t]) => t);
-  await db.batch([db.prepare('DELETE FROM pages WHERE paper = ? AND page > 0').bind(paperId), ...inserts(db, paperId, rows)]);
+  await db.batch([db.prepare('DELETE FROM page_text WHERE paper = ? AND page > 0').bind(paperId), ...inserts(db, paperId, rows)]);
   return rows.length;
 }
 
@@ -48,26 +59,26 @@ export async function indexPages(db, paperId, pages) {
 export async function indexNotes(db, paperId, texts) {
   await ensureSchema(db);
   const text = texts.filter(Boolean).join(' • ').slice(0, PAGE_MAX);
-  await db.batch([db.prepare('DELETE FROM pages WHERE paper = ? AND page = 0').bind(paperId),
+  await db.batch([db.prepare('DELETE FROM page_text WHERE paper = ? AND page = 0').bind(paperId),
     ...(text ? inserts(db, paperId, [[0, text]]) : [])]);
 }
 
 export async function removeFromIndex(db, paperId, { pdfOnly = false } = {}) {
   await ensureSchema(db);
-  await db.prepare(`DELETE FROM pages WHERE paper = ?${pdfOnly ? ' AND page > 0' : ''}`).bind(paperId).run();
+  await db.prepare(`DELETE FROM page_text WHERE paper = ?${pdfOnly ? ' AND page > 0' : ''}`).bind(paperId).run();
 }
 
 // Paper ids with at least one PDF page indexed (the library's "PDF not indexed" filter is the papers with a PDF not in here).
 export async function indexedPapers(db) {
   await ensureSchema(db);
-  const { results } = await db.prepare('SELECT DISTINCT paper FROM pages WHERE page > 0').all();
+  const { results } = await db.prepare('SELECT paper FROM indexed').all();
   return results.map((r) => r.paper);
 }
 
 // The text of a paper's first PDF pages (1..n), page 1 first; [] when it is not indexed.
 export async function firstPages(db, paperId, n = 3) {
   await ensureSchema(db);
-  const { results } = await db.prepare('SELECT page, text FROM pages WHERE paper = ? AND page BETWEEN 1 AND ? ORDER BY page').bind(paperId, n).all();
+  const { results } = await db.prepare('SELECT page, text FROM page_text WHERE paper = ? AND page BETWEEN 1 AND ? ORDER BY page').bind(paperId, n).all();
   return results.map((r) => r.text);
 }
 
@@ -84,7 +95,8 @@ export async function search(db, q, limit = 100) {
   if (!match) return [];
   await ensureSchema(db);
   const { results } = await db.prepare(
-    `SELECT paper, page, snippet(pages, 2, ?, ?, '…', 16) AS snippet FROM pages WHERE pages MATCH ? ORDER BY bm25(pages) LIMIT 400`,
+    `SELECT t.paper, t.page, snippet(page_fts, 0, ?, ?, '…', 16) AS snippet FROM page_fts JOIN page_text t ON t.id = page_fts.rowid
+     WHERE page_fts MATCH ? ORDER BY bm25(page_fts) LIMIT 400`,
   ).bind(MARK[0], MARK[1], match).all();
   const hits = new Map();
   for (const r of results) {
