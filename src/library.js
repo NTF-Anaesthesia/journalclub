@@ -5,6 +5,7 @@ import {
 } from 'firebase/firestore';
 import { buildIndex, searchPapers } from './search.js';
 import { findDoi } from './doi.js';
+import { abstractSections } from './abstract.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
@@ -242,7 +243,8 @@ async function renderPaper(id, hitPage) {
     <p>${links}</p>
     <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
-    ${p.abstract ? `<details><summary>Abstract</summary><p class="abstract">${c.esc(p.abstract)}</p></details>` : ''}
+    ${p.abstract ? `<details><summary>Abstract</summary><div class="abstract">${abstractSections(p.abstract)
+      .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></details>` : ''}
     <h2>PDF</h2><div id="file"></div>
     <h2>Notes and ratings ${avg ? `<span class="muted">· ${avg}/5 from ${rated.length}</span>` : ''}</h2>
     <form id="nf" class="stack"><label>Your note <textarea id="note" rows="3" maxlength="4000"></textarea></label>

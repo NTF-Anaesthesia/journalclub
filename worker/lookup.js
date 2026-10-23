@@ -1,5 +1,6 @@
 // Paper lookups (Crossref, PubMed, Unpaywall). Pure functions plus one
 // orchestrator that takes fetch as an argument, so tests run on saved fixtures.
+import { decodeEntities } from '../src/abstract.js';
 
 const CROSSREF = 'https://api.crossref.org/works/';
 const EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=xml&id=';
@@ -18,11 +19,21 @@ export function parseId(input) {
 
 const unxml = (s) => String(s ?? '')
   .replace(/<[^>]+>/g, '')
-  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-  .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-  .replace(/&amp;/g, '&')
+  .replace(/&[^;\s]+;/g, decodeEntities)
   .replace(/\s+/g, ' ').trim();
 const first = (re, s) => { const m = re.exec(s); return m ? m[1] : ''; };
+
+// Crossref JATS abstract: one line per <jats:title> section, as "Title: text".
+function jatsAbstract(s) {
+  const parts = String(s ?? '').split(/<jats:title>([\s\S]*?)<\/jats:title>/);
+  const out = [unxml(parts[0])];
+  for (let i = 1; i < parts.length; i += 2) {
+    const title = unxml(parts[i]);
+    const body = unxml(parts[i + 1]);
+    if (body) out.push(title && !/^abstract$/i.test(title) ? `${title}: ${body}` : body);
+  }
+  return out.filter(Boolean).join('\n');
+}
 
 export function parseCrossref(json) {
   const m = json?.message;
@@ -34,6 +45,7 @@ export function parseCrossref(json) {
     authors: (m.author || []).map((a) => [a.given, a.family].filter(Boolean).join(' ') || a.name || '').filter(Boolean),
     journal: unxml((m['container-title'] || [])[0]),
     year: date[0] || null,
+    abstract: jatsAbstract(m.abstract),
   };
 }
 
@@ -112,7 +124,7 @@ export async function lookup(input, fetchFn, email) {
     authors: cr?.authors?.length ? cr.authors : pm?.authors || [],
     journal: cr?.journal || pm?.journal || '',
     year: cr?.year || pm?.year || null,
-    abstract: pm?.abstract || '',
+    abstract: pm?.abstract || cr?.abstract || '',
     oa,
   };
 }
