@@ -74,7 +74,8 @@ export async function renderReader(r, c, apiFetch) {
   if (cached || isOffline(id)) $('#roff').hidden = false;
 
   let pdf;
-  try { pdf = await getDocument({ data: new Uint8Array(buf.slice(0)) }).promise; } catch { say('This PDF could not be read.'); return; }
+  const task = getDocument({ data: new Uint8Array(buf.slice(0)) });
+  try { pdf = await task.promise; } catch { say('This PDF could not be read.'); return; }
   const total = pdf.numPages;
   $('#pn').textContent = String(total);
   $('#pg').max = String(total);
@@ -222,5 +223,5 @@ export async function renderReader(r, c, apiFetch) {
   if (firstMark && Number(r.arg2)) firstMark.scrollIntoView({ block: 'center' });
   page.dataset.ready = '1';
 
-  addEventListener('hashchange', () => { removeEventListener('scroll', onScroll); io.disconnect(); clearTimeout(saveT); pdf.destroy().catch(() => {}); }, { once: true });
+  addEventListener('hashchange', () => { removeEventListener('scroll', onScroll); io.disconnect(); clearTimeout(saveT); task.destroy().catch(() => {}); }, { once: true });
 }
