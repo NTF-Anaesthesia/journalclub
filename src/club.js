@@ -22,6 +22,14 @@ const isAdmin = () => c.member.role === 'admin';
 const fmtDate = (ts) => ts.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return Timestamp.fromDate(d); };
 const safeUrl = (u) => (/^https:\/\/[^\s"<>]+$/.test(u || '') ? u : '');
+const MAX_SLIDES = 50 * 1024 * 1024;
+const SLIDE_TYPES = '.pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+async function apiFetch(path, init = {}) {
+  const token = await c.user.getIdToken();
+  return fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
+}
 
 // Club settings (Teams link, prompt, default start time) and the default discussion form live in config/*.
 export async function loadClub(ctx = c) {
@@ -237,6 +245,7 @@ async function renderPlan(paperId, sid) {
 
 async function deleteSession(snap) {
   const s = snap.data();
+  if (s.slidesFile?.kind) await apiFetch(`/api/slides/${snap.id}`, { method: 'DELETE' }).catch(() => {});
   const b = writeBatch(c.db);
   b.delete(snap.ref);
   await setPresented(b, s.paperId, snap.id, null);
@@ -256,6 +265,11 @@ async function renderSession(sid) {
   const points = pts.docs.map((d) => d.data());
   const fields = sessionFields(s, template);
   const slides = safeUrl(s.slides);
+  const sf = s.slidesFile?.kind ? s.slidesFile : null;
+  const slidesHtml = sf
+    ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
+       <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
+    : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
   const me = c.user.uid;
   const mayFill = isAdmin() || (!s.locked && [s.createdBy, s.presenterUid, s.coordinatorUid].includes(me));
   const page = c.el(`<section class="card"><p><a href="#/sessions">← Sessions</a></p>
@@ -265,7 +279,7 @@ async function renderSession(sid) {
     ${s.coordinatorName ? `<p class="muted">Coordinator: ${c.esc(s.coordinatorName)}</p>` : ''}
     ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
-    <h2>Slides</h2><p>${slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides link yet.</span>'}</p>
+    <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
     <h2>Members' points</h2><ul class="list" id="spts"></ul>
     <div id="sqr"></div>
@@ -290,25 +304,23 @@ async function renderSession(sid) {
     catch { e.target.textContent = 'Copy failed'; }
   };
   $in(page, '#sprint').onclick = () => window.print();
+  if (sf?.pdf) $in(page, '#spdf').onclick = () => openSlides(sid, 'pdf', sf.name);
+  if (sf && sf.kind !== 'pdf') $in(page, '#sorig').onclick = () => openSlides(sid, 'original', sf.name);
 
   const host = $in(page, '#sedit');
   if (mayFill) {
     const form = c.el(`<form class="stack"><h2>Edit</h2>
       <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label>
-      <label>Slides link <input id="eslides" type="url" placeholder="https://…" pattern="https://.*"></label>
       <button class="primary">Save</button><p id="emsg" class="muted"></p></form>`);
     $in(form, '#esum').value = s.summary || '';
-    $in(form, '#eslides').value = s.slides || '';
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const slidesIn = $in(form, '#eslides').value.trim();
-      if (slidesIn && !safeUrl(slidesIn)) { $in(form, '#emsg').textContent = 'The slides link must start with https://'; return; }
       try {
-        await updateDoc(snap.ref, { summary: $in(form, '#esum').value.trim(), slides: slidesIn });
+        await updateDoc(snap.ref, { summary: $in(form, '#esum').value.trim() });
         renderSession(sid);
       } catch { $in(form, '#emsg').textContent = 'Could not save.'; }
     };
-    host.append(form);
+    host.append(form, slidesForm(snap, sf));
     host.append(discussionForm(c, fields, s.discussion?.answers, async (answers) => {
       await updateDoc(snap.ref, { discussion: { fields: snapshot(fields), answers } });
       renderSession(sid);
@@ -320,6 +332,63 @@ async function renderSession(sid) {
     del.onclick = async () => { if (confirm('Delete this session?')) await deleteSession(snap); };
     host.append(del);
   }
+}
+
+// PDF opens in a new tab; PowerPoint downloads under its own name.
+async function openSlides(sid, which, name) {
+  const w = which === 'pdf' ? window.open('', '_blank') : null; // opened before the await so pop-up blockers allow it
+  const r = await apiFetch(`/api/slides/${sid}/${which}`);
+  if (!r.ok) { w?.close(); alert('Could not open the slides.'); return; }
+  const url = URL.createObjectURL(await r.blob());
+  if (which === 'pdf') { if (w) w.location.href = url; else location.href = url; return; }
+  const a = document.createElement('a');
+  a.href = url; a.download = name || 'slides.pptx';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// Upload a PDF or PowerPoint, or pull one from a share link; the Worker keeps a copy (and a PDF of PowerPoint).
+function slidesForm(snap, sf) {
+  const sid = snap.id;
+  const form = c.el(`<form class="stack" id="slidesform"><h2>${sf ? 'Replace slides' : 'Add slides'}</h2>
+    <label>Upload slides (PDF or PowerPoint) <input type="file" id="sfile" accept="${SLIDE_TYPES}"></label>
+    <label>Or pull from a link <input id="surl" type="url" placeholder="Google Slides, OneDrive, Dropbox or Drive link"></label>
+    <p class="muted">A link works only if it is shared as "Anyone with the link can view"; the file is copied here. PowerPoint is also saved as a PDF.</p>
+    <button class="primary">${sf ? 'Replace slides' : 'Add slides'}</button>
+    ${sf ? '<button type="button" class="link danger" id="sremove">Remove slides</button>' : ''}
+    <p id="smsg" class="muted" role="status"></p></form>`);
+  const msg = $in(form, '#smsg');
+  const btn = form.querySelector('button.primary');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const file = $in(form, '#sfile').files[0];
+    const link = $in(form, '#surl').value.trim();
+    if (!file && !link) { msg.textContent = 'Choose a file or paste a link.'; return; }
+    if (file && file.size > MAX_SLIDES) { msg.textContent = 'Slides are over 50 MB.'; return; }
+    if (!file && !safeUrl(link)) { msg.textContent = 'The link must start with https://'; return; }
+    btn.disabled = true;
+    msg.textContent = file ? 'Uploading… a PowerPoint takes up to a minute to turn into a PDF.' : 'Pulling the slides from the link…';
+    try {
+      const r = file
+        ? await apiFetch(`/api/slides/${sid}`, { method: 'PUT', body: file, headers: { 'X-File-Name': encodeURIComponent(file.name) } })
+        : await apiFetch(`/api/slides/${sid}`, { method: 'POST', body: JSON.stringify({ url: link }), headers: { 'Content-Type': 'application/json' } });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = out.error || 'Could not save the slides.'; btn.disabled = false; return; }
+      await updateDoc(snap.ref, { slidesFile: { name: out.name, size: out.size, kind: out.kind, pdf: out.pdf }, slides: '' });
+      if (out.warning) alert(out.warning);
+      renderSession(sid);
+    } catch { msg.textContent = 'Could not save the slides.'; btn.disabled = false; }
+  };
+  if (sf) {
+    $in(form, '#sremove').onclick = async () => {
+      if (!confirm('Remove the slides?')) return;
+      const r = await apiFetch(`/api/slides/${sid}`, { method: 'DELETE' }).catch(() => null);
+      if (!r?.ok) { msg.textContent = 'Could not remove the slides.'; return; }
+      await updateDoc(snap.ref, { slidesFile: {} });
+      renderSession(sid);
+    };
+  }
+  return form;
 }
 
 // Admin-only controls on a session: coordinator, start time, Teams link, form override, lock, delete.
