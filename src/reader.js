@@ -1,6 +1,7 @@
 // In-app PDF reader: #/read/<paper>/<page>?q=<term>. Continuous scroll, pinch or +/- zoom, page jump, the search term
 // highlighted, last page remembered per member on this device. The PDF comes from the offline cache when it is there,
-// else from the Worker (and is then kept for offline use).
+// else from the Worker in Range chunks (and is then kept for offline use). Streaming is off on purpose: the plain
+// network loader always opens with a small Range request, so only the chunks the first page needs are downloaded.
 import './polyfills.js';
 import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
 import { doc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
@@ -10,6 +11,7 @@ import { loadStarred } from './prefs.js';
 GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 const ZOOM_MIN = 0.5, ZOOM_MAX = 4;
 const KEEP_PAGES = 400;
+const RANGE_CHUNK = 256 * 1024;
 
 const posKey = (uid) => `jc.read.${uid}`;
 export function lastPage(uid, id) {
@@ -59,23 +61,35 @@ export async function renderReader(r, c, apiFetch) {
     if (latest) { const a = $('#rsess'); a.href = `#/session/${latest.id}`; a.hidden = false; }
   }).catch(() => {});
 
-  let buf, cached = false;
+  // Cached copy: read from memory. Otherwise PDF.js pulls the file from the Worker in Range chunks, so page 1 shows
+  // before the rest arrives; the whole file is then fetched in the background to keep it for offline use.
   const hit = await getCached(id);
-  if (hit) { buf = await hit.arrayBuffer(); cached = true; } else {
+  let source;
+  if (hit) source = { data: new Uint8Array(await hit.arrayBuffer()) };
+  else {
     try {
-      const res = await apiFetch(`/api/file/${id}`);
-      if (!res.ok) { say(res.status === 404 ? 'This paper has no PDF.' : 'Could not open the PDF.'); return; }
-      buf = await res.arrayBuffer();
+      const token = await c.user.getIdToken();
+      source = { url: `/api/file/${id}`, httpHeaders: { Authorization: `Bearer ${token}` }, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
     } catch { say('Could not open the PDF. You may be offline and it is not saved on this device.'); return; }
   }
   if (!page.isConnected) return;
-  if (cached) touch(id).catch(() => {});
-  else keep(id, buf).then(async () => { $('#roff').hidden = false; await prune(await loadStarred(c.db, c.user.uid).catch(() => new Set())); }).catch(() => {});
-  if (cached || isOffline(id)) $('#roff').hidden = false;
+  if (hit) { touch(id).catch(() => {}); }
+  if (hit || isOffline(id)) $('#roff').hidden = false;
 
   let pdf;
-  const task = getDocument({ data: new Uint8Array(buf.slice(0)) });
-  try { pdf = await task.promise; } catch { say('This PDF could not be read.'); return; }
+  const task = getDocument(source);
+  try { pdf = await task.promise; } catch (e) {
+    say(e?.name === 'MissingPDFException' || e?.status === 404 ? 'This paper has no PDF.' : hit ? 'This PDF could not be read.' : 'Could not open the PDF. You may be offline and it is not saved on this device.');
+    return;
+  }
+  if (!hit) {
+    apiFetch(`/api/file/${id}`).then(async (res) => {
+      if (!res.ok || !page.isConnected) return;
+      await keep(id, await res.arrayBuffer());
+      $('#roff').hidden = false;
+      await prune(await loadStarred(c.db, c.user.uid).catch(() => new Set()));
+    }).catch(() => {});
+  }
   const total = pdf.numPages;
   $('#pn').textContent = String(total);
   $('#pg').max = String(total);

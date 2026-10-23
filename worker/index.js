@@ -197,13 +197,7 @@ export async function api(request, env, fetchFn = fetch) {
   const key = `papers/${paperId}.pdf`;
   if (!env.FILES) return json({ error: 'File storage is not set up yet' }, 503);
 
-  if (request.method === 'GET') {
-    const obj = await env.FILES.get(key);
-    if (!obj) return json({ error: 'No file' }, 404);
-    return new Response(obj.body, { headers: {
-      'Content-Type': 'application/pdf', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline',
-    } });
-  }
+  if (request.method === 'GET' || request.method === 'HEAD') return serveFile(request, env.FILES, key);
 
   const paper = await paperAs(member, paperId, fetchFn);
   if (!paper) return json({ error: 'No such paper' }, 404);
@@ -229,6 +223,40 @@ export async function api(request, env, fetchFn = fetch) {
     return json({ ok: true, size: body.byteLength });
   }
   return json({ error: 'Method not allowed' }, 405);
+}
+
+// "bytes=a-b", "bytes=a-" or "bytes=-n" against a file of `size` bytes: {offset, length}; null when unsatisfiable;
+// undefined when not a single bytes range (the whole file is sent).
+export function parseRange(header, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim());
+  if (!m || (m[1] === '' && m[2] === '')) return undefined;
+  let start, end;
+  if (m[1] === '') { const n = Number(m[2]); if (!n) return null; start = Math.max(0, size - n); end = size - 1; }
+  else { start = Number(m[1]); end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1); }
+  if (start >= size || end < start) return null;
+  return { offset: start, length: end - start + 1 };
+}
+
+// Paper PDFs: Range (206), HEAD and ETag so the reader can show page 1 before the whole file arrives and revisits are
+// cheap. The browser may keep a copy for a day; removal clears the app's own caches, a stale HTTP copy can outlive it.
+async function serveFile(request, files, key) {
+  const head = await files.head(key);
+  if (!head) return json({ error: 'No file' }, 404);
+  const etag = head.httpEtag || (head.etag ? `"${head.etag}"` : '');
+  const base = {
+    'Content-Type': 'application/pdf', 'Content-Disposition': 'inline', 'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=86400', ...(etag ? { ETag: etag } : {}),
+  };
+  if (etag && request.headers.get('If-None-Match') === etag) return new Response(null, { status: 304, headers: base });
+  const range = parseRange(request.headers.get('Range'), head.size);
+  if (range === null) return new Response(null, { status: 416, headers: { ...base, 'Content-Range': `bytes */${head.size}` } });
+  if (request.method === 'HEAD') return new Response(null, { headers: { ...base, 'Content-Length': String(head.size) } });
+  const obj = await files.get(key, range ? { range } : undefined);
+  if (!obj) return json({ error: 'No file' }, 404);
+  if (!range) return new Response(obj.body, { headers: { ...base, 'Content-Length': String(head.size) } });
+  return new Response(obj.body, { status: 206, headers: {
+    ...base, 'Content-Length': String(range.length), 'Content-Range': `bytes ${range.offset}-${range.offset + range.length - 1}/${head.size}`,
+  } });
 }
 
 export default {
