@@ -154,8 +154,9 @@ function usualDate(club) {
 
 const mayPlanSession = (s) => isAdmin() || (!s.locked && [s.createdBy, s.presenterUid, s.coordinatorUid].includes(c.user.uid));
 
-// One quick sheet for planning (or editing) a session: date, paper by search-as-you-type, presenter, coordinator,
-// optional Teams link. Any member may plan; `#/plan/<paper>` opens it with that paper chosen, `#/plan/-/<sid>` edits.
+// One quick sheet for planning a session: date, paper by search-as-you-type, presenter, coordinator, optional Teams link.
+// Any member may plan; `#/plan/<paper>` opens it with that paper chosen. `#/plan/-/<sid>` is the session's Edit page:
+// the same sheet, then the summary, slides, discussion and (admins) the session settings.
 async function renderPlan(paperId, sid) {
   const oldSnap = sid ? await getDoc(doc(c.db, 'sessions', sid)) : null;
   if (sid && !oldSnap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/sessions">Sessions</a></p></section>')); return; }
@@ -182,9 +183,9 @@ async function renderPlan(paperId, sid) {
   const findUid = personIndex(linked);
   let warned = '';
 
-  const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'sessions'}">← ${sid ? 'Session' : 'Sessions'}</a></p>
+  const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'sessions'}">← ${sid ? 'Back to the session' : 'Sessions'}</a></p>
     <h1>${sid ? 'Edit session' : 'Plan a session'}</h1>
-    <form id="pf" class="stack">
+    <form id="pf" class="stack">${sid ? '<h2>Plan</h2>' : ''}
       <label>Date <input id="sdate" type="date" required></label><p id="sclash" class="muted"></p>
       <label>Paper <input id="spaper" type="search" autocomplete="off" placeholder="Search the library by title or author"></label>
       <ul id="spick" class="list"></ul>
@@ -192,9 +193,10 @@ async function renderPlan(paperId, sid) {
       <label>Coordinator <input id="scoord" list="people" maxlength="120" placeholder="Pick a member or type a name"></label>
       <datalist id="people">${[...people.keys()].map((n) => `<option value="${c.esc(n)}">`).join('')}</datalist>
       <label>Teams link for this session (optional) <input id="steams" type="url" placeholder="https://… (blank = standing link)" pattern="https://.*"></label>
-      <button class="primary">${sid ? 'Save' : 'Plan session'}</button><p id="smsg" class="muted"></p></form></section>`);
+      <button class="primary">${sid ? 'Save' : 'Plan session'}</button><p id="pfmsg" class="muted"></p></form>
+    ${sid ? `<div id="sedit" class="stack"></div><p><a class="button" href="#/session/${c.esc(sid)}">Done</a></p>` : ''}</section>`);
   c.view.replaceChildren(page);
-  const form = $in(page, '#pf'); const msg = $in(form, '#smsg');
+  const form = $in(page, '#pf'); const msg = $in(form, '#pfmsg');
   const find = $in(form, '#spaper'); const pick = $in(form, '#spick');
 
   let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: decodeEntities(old.paperTitle) } : null);
@@ -254,9 +256,41 @@ async function renderPlan(paperId, sid) {
       await setPresented(b, paper.id, ref.id, when);
       await b.commit();
       dirtyLibrary();
-      location.hash = `#/session/${ref.id}`;
+      if (!sid) { location.hash = `#/session/${ref.id}`; return; }
+      Object.assign(old, plan, { teamsUrl: teams });
+      msg.textContent = 'Saved.';
     } catch { msg.textContent = 'Could not save the session.'; }
   };
+  if (sid) await editSections(oldSnap, $in(page, '#sedit'));
+}
+
+// The rest of the Edit page: summary, slides, discussion, then admin settings and delete. Saves stay on the page.
+async function editSections(snap, host) {
+  const sid = snap.id;
+  const s = { id: sid, ...snap.data() };
+  const template = await loadTemplate();
+  const fields = sessionFields(s, template);
+  const sf = s.slidesFile?.kind ? s.slidesFile : null;
+  const reload = () => renderPlan('', sid);
+  const sum = c.el(`<form class="stack" id="sumform"><h2>Summary</h2>
+    <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label>
+    <button class="primary">Save summary</button><p id="emsg" class="muted"></p></form>`);
+  $in(sum, '#esum').value = s.summary || '';
+  sum.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await updateDoc(snap.ref, { summary: $in(sum, '#esum').value.trim() }); $in(sum, '#emsg').textContent = 'Saved.'; }
+    catch { $in(sum, '#emsg').textContent = 'Could not save.'; }
+  };
+  host.append(sum, slidesForm(snap, sf, reload));
+  host.append(discussionForm(c, fields, s.discussion?.answers, async (answers) => {
+    await updateDoc(snap.ref, { discussion: { fields: snapshot(fields), answers } });
+  }));
+  if (isAdmin()) host.append(adminSessionTools(snap, s, template, reload));
+  if (isAdmin() || s.createdBy === c.user.uid) {
+    const del = c.el('<button class="link danger">Delete session</button>');
+    del.onclick = async () => { if (confirm('Delete this session?')) await deleteSession(snap); };
+    host.append(del);
+  }
 }
 
 async function deleteSession(snap) {
@@ -286,23 +320,20 @@ async function renderSession(sid) {
     ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
        <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
     : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
-  const me = c.user.uid;
-  const mayFill = isAdmin() || (!s.locked && [s.createdBy, s.presenterUid, s.coordinatorUid].includes(me));
   const page = c.el(`<section class="card"><p><a href="#/sessions">← Sessions</a></p>
     <h1>${c.esc(fmtDate(s.date))}</h1>
     <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(decodeEntities(s.paperTitle))}</a></p>
     <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
     ${s.coordinatorName ? `<p class="muted">Coordinator: ${c.esc(s.coordinatorName)}</p>` : ''}
     ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
+    ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
     <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
     <h2>Members' points</h2><ul class="list" id="spts"></ul>
     <div id="sqr"></div>
-    <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span>
-    <div id="sedit" class="no-print"></div></section>`);
+    <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span></section>`);
   c.view.replaceChildren(page);
-  if (mayPlanSession(s)) $in(page, '#sedit').before(c.el(`<p class="no-print"><a href="#/plan/-/${c.esc(sid)}">Edit the plan (date, paper, presenter, coordinator)</a></p>`));
 
   const disc = discussionView(c, fields, s.discussion?.answers);
   if (disc.children.length) { $in(page, '#sdisc').append(c.el('<h2>Discussion</h2>'), disc); }
@@ -323,31 +354,6 @@ async function renderSession(sid) {
   if (sf?.pdf) $in(page, '#spdf').onclick = () => openSlides(sid, 'pdf', sf.name);
   if (sf && sf.kind !== 'pdf') $in(page, '#sorig').onclick = () => openSlides(sid, 'original', sf.name);
 
-  const host = $in(page, '#sedit');
-  if (mayFill) {
-    const form = c.el(`<form class="stack"><h2>Edit</h2>
-      <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label>
-      <button class="primary">Save</button><p id="emsg" class="muted"></p></form>`);
-    $in(form, '#esum').value = s.summary || '';
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      try {
-        await updateDoc(snap.ref, { summary: $in(form, '#esum').value.trim() });
-        renderSession(sid);
-      } catch { $in(form, '#emsg').textContent = 'Could not save.'; }
-    };
-    host.append(form, slidesForm(snap, sf));
-    host.append(discussionForm(c, fields, s.discussion?.answers, async (answers) => {
-      await updateDoc(snap.ref, { discussion: { fields: snapshot(fields), answers } });
-      renderSession(sid);
-    }));
-  }
-  if (isAdmin()) host.append(await adminSessionTools(snap, s, template));
-  else if (s.createdBy === me) {
-    const del = c.el('<button class="link danger">Delete session</button>');
-    del.onclick = async () => { if (confirm('Delete this session?')) await deleteSession(snap); };
-    host.append(del);
-  }
 }
 
 // PDF opens in a new tab; PowerPoint downloads under its own name.
@@ -364,9 +370,9 @@ async function openSlides(sid, which, name) {
 }
 
 // Upload a PDF or PowerPoint, or pull one from a share link; the Worker keeps a copy (and a PDF of PowerPoint).
-function slidesForm(snap, sf) {
+function slidesForm(snap, sf, done) {
   const sid = snap.id;
-  const form = c.el(`<form class="stack" id="slidesform"><h2>${sf ? 'Replace slides' : 'Add slides'}</h2>
+  const form = c.el(`<form class="stack" id="slidesform"><h2>Slides</h2><p class="muted" id="scur">${sf ? `${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}` : 'No slides yet.'}</p>
     <label>Upload slides (PDF or PowerPoint) <input type="file" id="sfile" accept="${SLIDE_TYPES}"></label>
     <label>Or pull from a link <input id="surl" type="url" placeholder="Google Slides, OneDrive, Dropbox or Drive link"></label>
     <p class="muted">A link works only if it is shared as "Anyone with the link can view"; the file is copied here. PowerPoint is also saved as a PDF.</p>
@@ -392,7 +398,7 @@ function slidesForm(snap, sf) {
       if (!r.ok) { msg.textContent = out.error || 'Could not save the slides.'; btn.disabled = false; return; }
       await updateDoc(snap.ref, { slidesFile: { name: out.name, size: out.size, kind: out.kind, pdf: out.pdf }, slides: '' });
       if (out.warning) alert(out.warning);
-      renderSession(sid);
+      done();
     } catch { msg.textContent = 'Could not save the slides.'; btn.disabled = false; }
   };
   if (sf) {
@@ -401,47 +407,39 @@ function slidesForm(snap, sf) {
       const r = await apiFetch(`/api/slides/${sid}`, { method: 'DELETE' }).catch(() => null);
       if (!r?.ok) { msg.textContent = 'Could not remove the slides.'; return; }
       await updateDoc(snap.ref, { slidesFile: {} });
-      renderSession(sid);
+      done();
     };
   }
   return form;
 }
 
-// Admin-only controls on a session: coordinator, start time, Teams link, form override, lock, delete.
-async function adminSessionTools(snap, s, template) {
-  const ms = await getDocs(collection(c.db, 'members'));
-  const members = ms.docs.map((d) => ({ uid: d.id, name: d.data().name || d.data().email }));
-  const findUid = personIndex(ms.docs.map((d) => ({ uid: d.id, name: d.data().name, email: d.data().email })));
+// Admin-only settings on a session: start time, lock, and the discussion form for this session only.
+function adminSessionTools(snap, s, template, done) {
   const box = c.el(`<div class="stack"><form class="stack" id="atools"><h2>Admin</h2>
-    <label>Coordinator <input id="acoord" list="amembers" maxlength="120" placeholder="Pick a member or type a name"></label>
-    <datalist id="amembers">${members.map((m) => `<option value="${c.esc(m.name)}">`).join('')}</datalist>
     <label>Start time <input id="atime" type="time"></label>
-    <label>Teams link for this session <input id="ateams" type="url" placeholder="https://… (blank = standing link)" pattern="https://.*"></label>
     <label><input id="alock" type="checkbox"> Locked (only admins edit)</label>
-    <button class="primary">Save</button><p class="muted" id="amsg"></p></form>
-    <details><summary>Discussion form for this session only</summary><div id="aform"></div></details></div>`);
-  $in(box, '#acoord').value = s.coordinatorName || '';
+    <button class="primary">Save settings</button><p class="muted" id="amsg"></p></form>
+    <details ${s.template?.length ? 'open' : ''}><summary>Discussion form for this session only</summary>
+      <p class="muted">${s.template?.length ? 'This session has its own form.' : s.discussion?.fields?.length
+        ? 'This session keeps the form its discussion was filled with; changes to the default form don\'t reach it.' : 'This session follows the default form.'}</p>
+      <p><button type="button" class="link" id="adefault">Use the default form</button></p>
+      <div id="aform"></div></details></div>`);
   $in(box, '#atime').value = s.time || '';
-  $in(box, '#ateams').value = s.teamsUrl || '';
   $in(box, '#alock').checked = !!s.locked;
   $in(box, '#atools').onsubmit = async (e) => {
     e.preventDefault();
-    const name = $in(box, '#acoord').value.trim();
-    const hit = members.find((m) => m.name === name) || members.find((m) => m.uid === findUid(name));
-    const url = $in(box, '#ateams').value.trim();
-    if (url && !safeUrl(url)) { $in(box, '#amsg').textContent = 'The Teams link must start with https://'; return; }
     try {
-      await updateDoc(snap.ref, { coordinatorName: name, coordinatorUid: hit ? hit.uid : '', time: $in(box, '#atime').value,
-        teamsUrl: url, locked: $in(box, '#alock').checked });
-      renderSession(snap.id);
+      await updateDoc(snap.ref, { time: $in(box, '#atime').value, locked: $in(box, '#alock').checked });
+      $in(box, '#amsg').textContent = 'Saved.';
     } catch { $in(box, '#amsg').textContent = 'Could not save.'; }
+  };
+  $in(box, '#adefault').onclick = async () => {
+    try { await updateDoc(snap.ref, { template }); done(); } catch { $in(box, '#amsg').textContent = 'Could not save.'; }
   };
   $in(box, '#aform').append(fieldEditor(c, sessionFields(s, template), async (fields) => {
     await updateDoc(snap.ref, { template: fields });
+    done();
   }, 'Save for this session'));
-  const del = c.el('<button class="link danger">Delete session</button>');
-  del.onclick = async () => { if (confirm('Delete this session?')) await deleteSession(snap); };
-  box.append(del);
   return box;
 }
 

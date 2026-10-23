@@ -47,9 +47,9 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
   // A presenter name that matches no member warns before saving (they could not edit the summary or slides).
-  await res.getByRole('link', { name: /Edit the plan/ }).click();
+  await res.getByRole('link', { name: 'Edit session' }).click();
   await res.getByLabel('Presenter').fill('Dr Nobody');
-  await res.getByRole('button', { name: 'Save' }).click();
+  await res.locator('#pf').getByRole('button', { name: 'Save' }).click();
   await expect(res.getByText(/Dr Nobody isn't linked to a member account/)).toBeVisible();
   await res.goBack();
   await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
@@ -63,13 +63,18 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.locator('li.paper', { hasText: 'Sugammadex' }).getByText(`Presented ${mon}`)).toBeVisible();
   await expect(res.locator('li.paper', { hasText: 'Tranexamic' }).getByText(/Presented/)).toHaveCount(0);
 
-  // Home shows the next session; the creator (a plain member) fills in the session page.
+  // Home shows the next session; the session page is read-only and the creator (a plain member) edits behind Edit session.
   await res.goto('/?emulator#/home');
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
   await res.locator('#next a').click();
+  const sid = res.url().split('/session/')[1];
+  await expect(res.getByLabel('Summary')).toHaveCount(0);
+  await expect(res.getByRole('button', { name: 'Save discussion' })).toHaveCount(0);
+  await res.getByRole('link', { name: 'Edit session' }).click();
+  await expect(res.getByRole('heading', { name: 'Edit session' })).toBeVisible();
   await res.getByLabel('Summary').fill('Reversal choice and PPCs: no difference in the primary outcome.');
-  await res.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(res.locator('#ssum')).toHaveText('Reversal choice and PPCs: no difference in the primary outcome.');
+  await res.getByRole('button', { name: 'Save summary' }).click();
+  await expect(res.locator('#emsg')).toHaveText('Saved.');
 
   // Slides: a PowerPoint upload (the Worker is faked here) shows Open PDF and Download PowerPoint.
   const sent = [];
@@ -86,18 +91,25 @@ test('a member plans a session from a paper page; the paper and the list show it
   await res.getByLabel('Or pull from a link').fill('');
   await res.getByLabel('Upload slides (PDF or PowerPoint)').setInputFiles({ name: 'Reversal talk.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer: Buffer.from('PK') });
   await res.getByRole('button', { name: 'Add slides' }).click();
+  await expect(res.locator('#scur')).toHaveText('Reversal talk.pptx · 2.3 MB');
+  expect(sent).toEqual(['POST ', 'PUT Reversal%20talk.pptx']);
+  await res.getByRole('link', { name: 'Done' }).click();
+  await expect(res.locator('#ssum')).toHaveText('Reversal choice and PPCs: no difference in the primary outcome.');
   await expect(res.getByRole('button', { name: 'Open PDF' })).toBeVisible();
   await expect(res.getByRole('button', { name: 'Download PowerPoint' })).toBeVisible();
   await expect(res.locator('#sslides')).toContainText('Reversal talk.pptx · 2.3 MB');
-  expect(sent).toEqual(['POST ', 'PUT Reversal%20talk.pptx']);
+  await res.getByRole('link', { name: 'Edit session' }).click();
   res.once('dialog', (d) => d.accept());
   await res.getByRole('button', { name: 'Remove slides' }).click();
-  await expect(res.locator('#sslides')).toHaveText('No slides yet.');
+  await expect(res.locator('#scur')).toHaveText('No slides yet.');
 
-  // Another member cannot edit the plan; the creator can delete it and the badge goes.
+  // Another member sees no Edit button and can't open the Edit page; the creator can delete it and the badge goes.
   const other = await signInAs(browser, 'other@example.org', 'Olu Other', 'member');
-  await other.goto('/?emulator#/session/' + (await res.url().split('/session/')[1]));
-  await expect(other.getByRole('link', { name: /Edit the plan/ })).toHaveCount(0);
+  await other.goto('/?emulator#/session/' + sid);
+  await expect(other.getByText('Presenter: Ada Resident')).toBeVisible();
+  await expect(other.getByRole('link', { name: 'Edit session' })).toHaveCount(0);
+  await other.goto('/?emulator#/plan/-/' + sid);
+  await expect(other.getByRole('heading', { name: 'Not allowed' })).toBeVisible();
   res.once('dialog', (d) => d.accept());
   await res.getByRole('button', { name: 'Delete session' }).click();
   await res.goto('/?emulator#/library');
@@ -128,19 +140,24 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   await admin.getByRole('button', { name: 'Save meeting settings' }).click();
   await expect(admin.locator('#cmsg')).toHaveText('Saved.');
 
-  // Admin sets the coordinator on the session.
-  await admin.goto('/?emulator#/session/disc1');
+  // Admin sets the coordinator on the session's Edit page.
+  await admin.goto('/?emulator#/plan/-/disc1');
   await admin.getByLabel('Coordinator').fill('Dr Consultant');
-  await admin.locator('#atools').getByRole('button', { name: 'Save' }).click();
+  await admin.locator('#pf').getByRole('button', { name: 'Save' }).click();
+  await expect(admin.locator('#pfmsg')).toHaveText('Saved.');
+  await admin.getByRole('link', { name: 'Done' }).click();
   await expect(admin.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
   // The presenter fills in the new form.
   await pres.goto('/?emulator#/session/disc1');
+  await pres.getByRole('link', { name: 'Edit session' }).click();
   await expect(pres.getByLabel('Local relevance')).toBeVisible();
   await pres.getByLabel('Take-home points').fill('Fewer delirium days\nMore bradycardia');
   await pres.getByLabel('Would this change our practice?').selectOption('Maybe');
   await pres.getByLabel('Local relevance').fill('Ward patients only');
   await pres.getByRole('button', { name: 'Save discussion' }).click();
+  await expect(pres.locator('#dmsg')).toHaveText('Saved.');
+  await pres.getByRole('link', { name: 'Done' }).click();
   await expect(pres.getByRole('heading', { name: 'Local relevance' })).toBeVisible();
   await expect(pres.getByText('Ward patients only').first()).toBeVisible();
 
@@ -165,4 +182,20 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   expect(csv).toContain('Fewer delirium days | More bradycardia');
   expect(csv).toContain('Ward patients only');
   expect(csv).toContain('Watch the heart rate');
+
+  // After the discussion is saved, the admin's form for this session still takes effect (it used to be ignored).
+  await admin.goto('/?emulator#/plan/-/disc1');
+  await admin.getByText('Discussion form for this session only').click();
+  const local = admin.locator('#aform li', { has: admin.locator('input[value="Local relevance"]') });
+  await local.getByLabel('Label').fill('Relevance to our unit');
+  await admin.getByRole('button', { name: 'Save for this session' }).click();
+  await expect(admin.locator('#dfields').getByLabel('Relevance to our unit')).toHaveValue('Ward patients only');
+  await admin.getByRole('link', { name: 'Done' }).click();
+  await expect(admin.getByRole('heading', { name: 'Relevance to our unit' })).toBeVisible();
+  await expect(admin.getByRole('heading', { name: 'Local relevance' })).toHaveCount(0);
+
+  // "Use the default form" switches the session back to the default (Local relevance).
+  await admin.getByRole('link', { name: 'Edit session' }).click();
+  await admin.getByRole('button', { name: 'Use the default form' }).click();
+  await expect(admin.locator('#dfields').getByLabel('Local relevance')).toHaveValue('Ward patients only');
 });

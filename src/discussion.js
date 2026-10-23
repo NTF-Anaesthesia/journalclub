@@ -53,8 +53,8 @@ export function answerText(f, answers) {
   return String(v || '').trim();
 }
 
-// Fields the session was filled with (its own copy), or the current template when nothing is saved yet.
-export const sessionFields = (s, template) => (s.discussion?.fields?.length ? s.discussion.fields : s.template?.length ? s.template : template);
+// The admin's override for this session wins; then the copy the discussion was filled with; then the current template.
+export const sessionFields = (s, template) => (s.template?.length ? s.template : s.discussion?.fields?.length ? s.discussion.fields : template);
 
 export function missingRequired(fields, answers) {
   return fields.filter((f) => f.required && !answerText(f, answers)).map((f) => f.label);
