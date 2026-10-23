@@ -1,12 +1,12 @@
 // Journal club pages: home (next session), the Plan a session sheet, session pages.
 import qrcode from 'qrcode-generator';
-import { decodeEntities, cleanPaper } from './abstract.js';
+import { decodeEntities } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, query, where, orderBy,
   limit, writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore';
 
-import { dirty as dirtyLibrary } from './library.js';
+import { dirty as dirtyLibrary, loadLibrary } from './catalogue.js';
 import { personIndex } from './people.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
@@ -165,9 +165,9 @@ async function renderPlan(paperId, sid) {
     c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who planned this session, its presenter, its coordinator or an admin can change it.</p><p><a href="#/session/${c.esc(sid)}">Back to the session</a></p></section>`));
     return;
   }
-  const [ps, ss, club] = await Promise.all([getDocs(collection(c.db, 'papers')), getDocs(collection(c.db, 'sessions')), loadClub()]);
-  const papers = ps.docs.map((d) => cleanPaper({ id: d.id, ...d.data() }))
-    .map((p) => ({ id: p.id, title: p.title, hay: `${p.title} ${p.authors.join(' ')} ${p.year || ''}`.toLowerCase() }));
+  // The library's cached catalogue (src/catalogue.js), not a fresh read of every paper.
+  const [lib, ss, club] = await Promise.all([loadLibrary(c.db), getDocs(collection(c.db, 'sessions')), loadClub()]);
+  const papers = [...lib.papers].map(([id, p]) => ({ id, title: p.title, hay: `${p.title} ${(p.authors || []).join(' ')} ${p.year || ''}`.toLowerCase() }));
   // Names for the pickers: people on earlier sessions, plus the whole member list for admins (members can't list it).
   const people = new Map();
   const note = (name, uid) => { if (name && (uid || !people.has(name))) people.set(name, uid || ''); };

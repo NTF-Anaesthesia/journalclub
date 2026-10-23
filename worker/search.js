@@ -57,6 +57,13 @@ export async function removeFromIndex(db, paperId, { pdfOnly = false } = {}) {
   await db.prepare(`DELETE FROM pages WHERE paper = ?${pdfOnly ? ' AND page > 0' : ''}`).bind(paperId).run();
 }
 
+// Paper ids with at least one PDF page indexed (the library's "PDF not indexed" filter is the papers with a PDF not in here).
+export async function indexedPapers(db) {
+  await ensureSchema(db);
+  const { results } = await db.prepare('SELECT DISTINCT paper FROM pages WHERE page > 0').all();
+  return results.map((r) => r.paper);
+}
+
 // Each word becomes a quoted prefix term; FTS5 ANDs them. Returns null when there is nothing to search.
 export function ftsQuery(q) {
   const words = String(q || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];

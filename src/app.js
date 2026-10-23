@@ -78,10 +78,10 @@ function render() {
 const TABS = [
   ['', 'Library', '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>'],
   ['home', 'Club', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
-  ['lists', 'Saved', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
+  ['lists', 'Saved', '<path d="M6 4h12v16l-6-4-6 4z"/>'],
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', home: 'home', lists: 'lists', list: 'lists',
+const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', remove: '', reindex: '', duplicates: '', home: 'home', lists: 'lists', list: 'lists',
   sessions: 'sessions', session: 'sessions', point: 'sessions', plan: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 

@@ -6,7 +6,7 @@
 // member's own row (and a paper) from the Firestore REST API with that token, so Firestore checks the
 // token and the rules decide, exactly as in the browser.
 import { lookup } from './lookup.js';
-import { cleanPages, indexPages, indexNotes, removeFromIndex, search } from './search.js';
+import { cleanPages, indexPages, indexNotes, removeFromIndex, search, indexedPapers } from './search.js';
 import { MAX_SLIDES, pullUrls, pull, storeSlides, serveSlides, deleteSlides } from './slides.js';
 
 const AUTH_HELPER = 'https://journalclub-anantf.firebaseapp.com';
@@ -85,6 +85,7 @@ async function searchApi(request, url, env, member, fetchFn) {
   if (url.pathname === '/api/search' && request.method === 'GET') {
     return json({ hits: await search(env.SEARCH, (url.searchParams.get('q') || '').slice(0, 200)) });
   }
+  if (url.pathname === '/api/indexed' && request.method === 'GET') return json({ ids: await indexedPapers(env.SEARCH) });
   if (url.pathname === '/api/backfill' && request.method === 'POST') {
     if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
     return backfill(member, env, await request.json().catch(() => ({})), fetchFn);
@@ -162,7 +163,7 @@ export async function api(request, env, fetchFn = fetch) {
     return json(out, out.error ? 404 : 200);
   }
 
-  if (url.pathname === '/api/search' || url.pathname === '/api/backfill' || url.pathname.startsWith('/api/index/')) {
+  if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/')) {
     return searchApi(request, url, env, member, fetchFn);
   }
   const sl = /^\/api\/slides\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original))?$/.exec(url.pathname);

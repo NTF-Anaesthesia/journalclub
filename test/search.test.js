@@ -147,3 +147,18 @@ test('admin backfill moves texts/* into D1 in batches, then indexes notes', asyn
   while (body) body = (await (await call(body)).json()).next;
   assert.equal((await find(env, W, 'backfilled')).length, 12);
 });
+
+test('GET /api/indexed lists papers with PDF pages indexed (notes alone do not count), members only', async () => {
+  const W = world({ members, papers, notes: { p2: ['Only a note here'] } });
+  const env = { SEARCH: d1.db };
+  for (const id of ['p1', 'p2', 'p3']) await api(req(`/api/index/${id}`, 'adm', { method: 'DELETE' }), env, W);
+  await api(putPages('p1', 'mem1', ['Indexed page']), env, W);
+  await api(req('/api/index/p2/notes', 'mem1', { method: 'POST' }), env, W);
+  const r = await api(req('/api/indexed', 'mem2'), env, W);
+  assert.equal(r.status, 200);
+  const got = (await r.json()).ids; // the D1 is shared with the tests above (backfill papers b*)
+  assert.ok(got.includes('p1'));
+  assert.ok(!got.includes('p2') && !got.includes('p3'));
+  assert.equal((await api(req('/api/indexed', 'stranger'), env, W)).status, 401);
+  assert.equal((await api(req('/api/indexed', 'mem2'), {}, W)).status, 503);
+});
