@@ -158,3 +158,24 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
   await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
   await expect(page.getByText(/Creative Commons|licence/i)).toHaveCount(0);
 });
+
+test('paper page decodes stored entities and bolds abstract section labels', async ({ page }) => {
+  const uid = await signInAsMember(page, 'res2@example.org');
+  // Stored the old way: hex entities left raw, labels as plain "LABEL: " text.
+  const abstract = 'BACKGROUND: Low SpO&#x2082;&#xa0;is common.\nMETHODS: Adults with BMI &#x2264; 35. RESULTS: It fell.';
+  const seed = await page.request.patch(
+    'http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents/papers/abs1',
+    { headers: { Authorization: 'Bearer owner' }, data: { fields: {
+      title: { stringValue: 'Oxygen in recovery' }, doi: { stringValue: '' }, pmid: { stringValue: '' },
+      abstract: { stringValue: abstract }, addedBy: { stringValue: uid } } } });
+  expect(seed.ok()).toBeTruthy();
+  await page.goto('/?emulator#/paper/abs1');
+  await page.reload();
+  await page.getByText('Abstract', { exact: true }).click();
+  const box = page.locator('.abstract');
+  await expect(box.locator('strong')).toHaveText(['BACKGROUND:', 'METHODS:', 'RESULTS:']);
+  await expect(box.locator('p')).toHaveCount(3);
+  await expect(box).toContainText('SpO₂');
+  await expect(box).toContainText('≤ 35');
+  expect(await box.innerHTML()).not.toMatch(/&amp;#x|&#x/);
+});

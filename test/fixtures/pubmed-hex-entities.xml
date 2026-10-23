@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID Version="1">99999901</PMID><Article>
+<Journal><Title>Test Journal</Title><JournalIssue><PubDate><Year>2024</Year></PubDate></JournalIssue></Journal>
+<ArticleTitle>Oxygen and CO&#x2082; in the PACU.</ArticleTitle>
+<Abstract>
+<AbstractText Label="BACKGROUND" NlmCategory="BACKGROUND">Low S<sub>p</sub>O&#x2082;&#xa0;is common.</AbstractText>
+<AbstractText Label="METHODS" NlmCategory="METHODS">Adults aged &#x2265;&#xa0;18 years with BMI &#x2264; 35&#xa0;kg&#xb7;m<sup>-2</sup> &amp; ASA I&#x2013;III.</AbstractText>
+<AbstractText Label="RESULTS" NlmCategory="RESULTS">Rate fell (P &lt; 0.001).</AbstractText>
+</Abstract>
+<AuthorList><Author><LastName>Tan</LastName><ForeName>A</ForeName></Author></AuthorList>
+</Article></MedlineCitation>
+<PubmedData><ArticleIdList><ArticleId IdType="doi">10.9999/test.hex</ArticleId></ArticleIdList></PubmedData>
+</PubmedArticle></PubmedArticleSet>

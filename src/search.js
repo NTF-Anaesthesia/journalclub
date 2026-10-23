@@ -1,4 +1,5 @@
 import MiniSearch from 'minisearch';
+import { decodeEntities } from './abstract.js';
 
 // One search document per paper (metadata, abstract, notes) and one per stored PDF page,
 // so a hit inside a PDF can open at its page.
@@ -13,7 +14,7 @@ export function buildIndex(papers, notes, texts) {
     docs.push({
       id: `p:${id}`, paperId: id, page: null,
       title: p.title, authors: (p.authors || []).join(' '), journal: p.journal, tags: (p.tags || []).join(' '),
-      why: p.why, abstract: p.abstract, notes: (notes.get(id) || []).map((n) => n.text).join(' '),
+      why: p.why, abstract: decodeEntities(p.abstract), notes: (notes.get(id) || []).map((n) => n.text).join(' '),
     });
     (texts.get(id) || []).forEach((text, i) => { if (text) docs.push({ id: `t:${id}:${i + 1}`, paperId: id, page: i + 1, text }); });
   }
