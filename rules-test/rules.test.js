@@ -111,6 +111,19 @@ const newPaper = (uid, extra = {}) => ({
   oa: { status: 'closed', license: null, url: null }, tags: ['airway'], why: 'good', addedBy: uid, addedAt: serverTimestamp(), ...extra,
 });
 
+test('admin refresh may rewrite bibliographic fields only; members and other fields cannot', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'papers/r1'),
+    { ...newPaper('mem1'), addedAt: new Date(), doi: '', pmid: '' }));
+  const a = doc(as('admin1', 'a@x.org'), 'papers/r1'), m = doc(as('mem1', 'm@x.org'), 'papers/r1');
+  await assertSucceeds(updateDoc(a, { title: 'New', journal: 'J2', authors: ['C D'], abstract: '10⁹/L', doi: '10.2/y', pmid: '7' }));
+  await assertFails(updateDoc(a, { doi: '10.3/z' }));      // doi already set
+  await assertFails(updateDoc(a, { title: '' }));
+  await assertFails(updateDoc(a, { year: 1999 }));
+  await assertFails(updateDoc(a, { title: 'N', addedBy: 'admin1' }));
+  await assertFails(updateDoc(m, { abstract: 'member edit' }));
+  await assertFails(updateDoc(m, { title: 'member edit' }));
+});
+
 test('members add papers as themselves; strangers cannot read or add', async () => {
   const m = as('mem1', 'm@x.org');
   await assertSucceeds(setDoc(doc(m, 'papers/p1'), newPaper('mem1')));

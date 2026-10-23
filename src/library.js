@@ -6,6 +6,7 @@ import {
 import { buildIndex, searchPapers } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
+import { mountRefresh } from './refresh.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
@@ -67,6 +68,7 @@ async function renderSearch() {
     <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a> <a href="#/lists">Reading lists</a></p>
     <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul></section>`);
   c.view.replaceChildren(page);
+  if (c.member.role === 'admin') mountRefresh(page, c, dirty);
   const q = $in(page, '#q');
   q.value = lastQuery;
   const { papers, index } = await loadLibrary();
