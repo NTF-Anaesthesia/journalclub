@@ -20,6 +20,7 @@ let c;              // { db, user, member, view, el, esc } for the current rende
 
 const $in = (root, sel) => root.querySelector(sel);
 const isAdmin = () => c.member.role === 'admin';
+const startTimeText = (s, club) => new Date(startMillis(s, club.time)).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const fmtDate = (ts) => ts.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return Timestamp.fromDate(d); };
 const safeUrl = (u) => (/^https:\/\/[^\s"<>]+$/.test(u || '') ? u : '');
@@ -69,7 +70,7 @@ async function renderHome() {
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
-      <span>${c.esc(decodeEntities(s.paperTitle))}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
+      <a href="#/session/${d.id}" class="plain">${c.esc(decodeEntities(s.paperTitle))}</a><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
     if (s.date.toMillis() >= today) { if (!next) next = { id: d.id, ...s }; else up.append(li); } else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
@@ -79,7 +80,7 @@ async function renderHome() {
   else {
     const hasSlides = next.slidesFile?.kind || safeUrl(next.slides);
     box.replaceChildren(c.el(`<p class="next"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
-        <a href="#/paper/${c.esc(next.paperId)}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
+        <a href="#/session/${next.id}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
       c.el(`<p class="actions">${hasSlides ? `<a href="#/session/${next.id}">Slides</a>` : ''}<a href="#/point/${next.id}">Add take-home point</a></p>`));
     const url = safeUrl(next.teamsUrl || club.teamsUrl);
     if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
@@ -376,12 +377,20 @@ async function renderSession(sid) {
     ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
        <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
     : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
-  const page = c.el(`<section class="card"><p><a href="#/home">← Club</a></p>
-    <h1>${c.esc(fmtDate(s.date))}</h1>
-    <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(decodeEntities(s.paperTitle))}</a></p>
-    <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
-    ${s.coordinatorName ? `<p class="muted">Coordinator: ${c.esc(s.coordinatorName)}</p>` : ''}
-    ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
+  document.title = `Session ${fmtDate(s.date)} · Journal club`;
+  const paperSnap = s.paperId ? await getDoc(doc(c.db, 'papers', s.paperId)).catch(() => null) : null;
+  const paper = paperSnap?.exists() ? paperSnap.data() : null;
+  const pmeta = paper ? [paper.journal, paper.year].filter(Boolean).join(' · ') : '';
+  const short = paper?.abstract ? decodeEntities(paper.abstract).replace(/\s+/g, ' ').slice(0, 220).replace(/\s+\S*$/, '') + (paper.abstract.length > 220 ? '…' : '') : '';
+  const venue = s.venue || s.location || '';
+  const page = c.el(`<section class="card sessionpage"><p class="eyebrow">SESSION</p><p class="back"><a href="#/home">← Club</a></p>
+    <div class="session-head"><h1>${c.esc(fmtDate(s.date))}</h1>
+    <p class="muted">${c.esc(startTimeText(s, club))}${venue ? ` · ${c.esc(venue)}` : ''}</p>
+    <p>Presenter: ${c.esc(s.presenterName || '—')}${s.coordinatorName ? `<br>Coordinator: ${c.esc(s.coordinatorName)}` : ''}</p>
+    ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}</div>
+    <div class="paper-card" id="spaper"><p class="eyebrow">PAPER</p><p><strong>${c.esc(decodeEntities(s.paperTitle))}</strong></p>
+      ${pmeta ? `<p class="muted">${c.esc(pmeta)}</p>` : ''}${short ? `<p>${c.esc(short)}</p>` : ''}
+      ${s.paperId ? `<p><a class="button" id="openpaper" href="#/paper/${c.esc(s.paperId)}">Open paper</a></p>` : ''}</div>
     ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
     <h2>Slides</h2><p id="sslides">${slidesHtml}</p>

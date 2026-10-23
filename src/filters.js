@@ -2,7 +2,7 @@
 // `x` carries what is not on the paper itself: { starred: Set, indexed: Set | null, ratings: Map, recent: [ids] }.
 
 export const SORTS = [
-  ['newest', 'Newest first'], ['year', 'Year'], ['title', 'Title'], ['author', 'First author'],
+  ['discussed', 'Recently discussed'], ['newest', 'Newest added'], ['year', 'Year'], ['title', 'Title'], ['author', 'First author'],
   ['rating', 'Average rating'], ['recent', 'Recently opened'],
 ];
 export const sortLabel = (k) => (SORTS.find(([s]) => s === k) || SORTS[0])[1];
@@ -45,6 +45,10 @@ export function tagCounts(entries) {
   return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
+// When the paper was last discussed: its newest past session (a planned one doesn't count yet); 0 if never.
+const when = (e) => (e?.date?.toMillis ? e.date.toMillis() : typeof e?.date === 'number' ? e.date : e?.date ? new Date(e.date).getTime() : 0);
+export const discussedAt = (p, now = Date.now()) => (p.presented || []).reduce((m, e) => { const t = when(e); return t && t <= now && t > m ? t : m; }, 0);
+
 const added = (p) => p.addedAt?.seconds || 0;
 const byNewest = (a, b) => added(b[1]) - added(a[1]);
 const text = (s) => String(s || '').replace(/^(the|a|an)\s+/i, '').trim();
@@ -54,6 +58,10 @@ const last = (a, b, cmp) => (a === '' || a == null ? (b === '' || b == null ? 0 
 
 export function sortEntries(entries, sort, x = {}) {
   const e = [...entries];
+  if (sort === 'discussed') {
+    const now = x.now || Date.now();
+    return e.sort((a, b) => discussedAt(b[1], now) - discussedAt(a[1], now) || byNewest(a, b));
+  }
   if (sort === 'year') return e.sort((a, b) => last(a[1].year, b[1].year, () => b[1].year - a[1].year) || byNewest(a, b));
   if (sort === 'title') return e.sort((a, b) => text(a[1].title).localeCompare(text(b[1].title), 'en', { sensitivity: 'base' }));
   if (sort === 'author') {

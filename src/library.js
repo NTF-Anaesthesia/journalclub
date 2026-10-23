@@ -10,7 +10,7 @@ import { abstractSections, cleanPaper } from './abstract.js';
 import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
-import { SORTS, sortLabel, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
+import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
@@ -20,8 +20,11 @@ const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
 const PAGE = 50;
+const HEAD_SORT = new Set(['discussed', 'newest']); // the saved first paint is the top 50 of the default order
 // The list's state, kept while moving between pages: search, filters, sort, rows shown, and a selection to restore.
-const ui = { q: '', filter: emptyFilter(), sort: 'newest', shown: PAGE, pendingSel: null };
+const SORT_KEY = 'jc.sort';
+const savedSort = () => { try { const v = localStorage.getItem(SORT_KEY); return SORTS.some(([k]) => k === v) ? v : 'discussed'; } catch { return 'discussed'; } };
+const ui = { q: '', filter: emptyFilter(), sort: savedSort(), shown: PAGE, pendingSel: null };
 const ABSTRACT_NOTE = {
   ai: 'Written by an AI from the PDF text, not by the authors. Check it against the paper.',
   pdf: 'Taken from the PDF’s own abstract or summary.',
@@ -82,7 +85,7 @@ function paperItem(id, p, page, snippet) {
   const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
   const authors = showAuthors() && (p.authors || []).length ? `<span class="muted authors">${c.esc(authorLine(p.authors))}</span>` : '';
   const last = (p.presented || []).at(-1);
-  const badge = last ? ` <span class="badge">Presented ${c.esc(presentedOn(last).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</span>` : '';
+  const badge = last ? ` <${last.sid ? `a href="#/session/${c.esc(last.sid)}"` : 'span'} class="badge">Presented ${c.esc(presentedOn(last).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</${last.sid ? 'a' : 'span'}>` : '';
   return c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>${authors}
     <span class="muted">${c.esc(meta)}${pdf}${noAbs}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
 }
@@ -111,7 +114,7 @@ async function renderSearch() {
 
   // First paint: the newest 50 saved on this device, else (first open here) a small query, while the catalogue loads.
   if (!current() || current().stale) {
-    const head = !ui.q && !filterOn(ui.filter) && ui.sort === 'newest' ? readHead() : null;
+    const head = !ui.q && !filterOn(ui.filter) && HEAD_SORT.has(ui.sort) ? readHead() : null;
     if (head?.length) {
       res.replaceChildren(...head.map(([id, p]) => paperItem(id, p)));
       timing.head = Math.round(performance.now() - t0);
@@ -181,7 +184,7 @@ async function renderSearch() {
     const more = cat.partial ? '+' : '';
     if (!papers.size) setCount(cat.partial ? 'Still loading the library…' : 'No papers yet. Add the first one.');
     else setCount(`${matchIds.length}${more} ${matchIds.length === 1 && !more ? 'paper' : 'papers'} · ${sortLabel(ui.sort)}`);
-    if (!cat.partial && !filterOn(ui.filter) && ui.sort === 'newest') writeHead(entries);
+    if (!cat.partial && !filterOn(ui.filter) && HEAD_SORT.has(ui.sort)) writeHead(entries);
     drawSel();
   };
   const showHits = (hits, done) => {
@@ -199,7 +202,7 @@ async function renderSearch() {
     const mine = ++seq;
     clearTimeout(timer);
     if (!ui.q) { drawList(); return; }
-    const local = searchPapers(cat.index, ui.q).filter((h) => papers.has(h.paperId));
+    const local = searchPapers(cat.index, ui.q, (id) => discussedAt(papers.get(id) || {})).filter((h) => papers.has(h.paperId));
     if (ui.q.length < 3) { showHits(local, true); return; }
     showHits(local, false);
     timer = setTimeout(async () => {
@@ -258,6 +261,7 @@ async function renderSearch() {
       <ul class="list"><li><label class="check-row"><input type="checkbox" id="sauth"${showAuthors() ? ' checked' : ''}><span class="grow">Show authors</span></label></li></ul>`);
     d.querySelectorAll('input[name=sort]').forEach((r) => { r.onchange = async () => {
       ui.sort = r.value;
+      try { localStorage.setItem(SORT_KEY, ui.sort); } catch { /* private */ }
       if (ui.sort === 'rating' && !x.ratings) {
         const ns = await getDocs(collectionGroup(c.db, 'notes')).catch(() => null);
         x.ratings = averageRatings((ns?.docs || []).map((n) => ({ paperId: n.ref.parent.parent.id, rating: n.data().rating })));
@@ -525,19 +529,23 @@ async function renderPaper(id, hitPage) {
   const mine = notes.find((n) => n.uid === c.user.uid);
   const rated = notes.filter((n) => n.rating > 0);
   const avg = rated.length ? (rated.reduce((s, n) => s + n.rating, 0) / rated.length).toFixed(1) : null;
+  document.title = `${p.title} · Paper · Journal club`;
   const links = [
     p.doi && `<a href="https://doi.org/${c.esc(p.doi)}" target="_blank" rel="noopener">Publisher page</a>`,
     p.doi && `<a href="${NUS_PROXY}${encodeURIComponent('https://doi.org/' + p.doi)}" target="_blank" rel="noopener">Via NUS Libraries</a>`,
     p.pmid && `<a href="https://pubmed.ncbi.nlm.nih.gov/${c.esc(p.pmid)}/" target="_blank" rel="noopener">PubMed</a>`,
   ].filter(Boolean).join(' · ');
-  const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
-    <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
-    <p class="actions"><button type="button" id="star" class="star-btn"></button></p>
-    <p>${links}</p>
-    <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
+  const meta = [p.journal, p.year].filter(Boolean).map(c.esc).join(' · ');
+  const doiLink = p.doi ? `<a href="https://doi.org/${c.esc(p.doi)}" target="_blank" rel="noopener">DOI</a>` : '';
+  const page = c.el(`<section class="card paperpage"><p class="eyebrow">PAPER</p><p class="back"><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
+    <p class="muted meta">${[meta, doiLink].filter(Boolean).join(' · ')}</p>
+    ${(p.tags || []).length ? `<p class="tagrow">${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>` : ''}
+    ${p.abstract ? `<div class="abstract-open"><h2>${p.abstractSource === 'ai' ? 'AI summary' : 'Abstract'}</h2>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
+      .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></div>` : ''}
+    <p class="actions compact"><button type="button" id="star" class="star-btn"></button><button type="button" id="addto">Lists and tags…</button><button type="button" id="editd">Edit details</button></p>
+    <p class="muted" id="inlists"></p>
+    ${links ? `<p class="links">${links}</p>` : ''}
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
-    ${p.abstract ? `<details><summary>${p.abstractSource === 'ai' ? 'AI summary' : 'Abstract'}</summary>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
-      .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></details>` : ''}
     ${(p.manual || []).length ? `<p class="muted" id="handnote">Edited by hand (${c.esc(p.manual.join(', '))}). <button type="button" class="link" id="unhand">Let Refresh update these again</button></p>` : ''}
     <h2>PDF</h2><div id="file"></div>
     <h2>Notes and ratings ${avg ? `<span class="muted">· ${avg}/5 from ${rated.length}</span>` : ''}</h2>
@@ -546,7 +554,6 @@ async function renderPaper(id, hitPage) {
       <button class="primary">Save note</button></form>
     <ul id="notes" class="list"></ul>
     <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
-    <h2>Reading lists</h2><p id="inlists" class="muted"></p><p class="actions"><button type="button" id="addto">Lists and tags…</button></p>
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
 
@@ -637,9 +644,7 @@ async function renderPaper(id, hitPage) {
 
   // Edit details: any member (title, authors, journal, year, DOI, PubMed ID, abstract, tags, why). The adder or an
   // admin also gets the link to the separate removal page.
-  const ed = c.el(`<p class="actions"><button type="button" id="editd">Edit details</button></p>`);
-  $in(ed, '#editd').onclick = () => editSheet(c, id, p, () => renderPaper(id, hitPage));
-  $in(page, '#edit').append(ed);
+  $in(page, '#editd').onclick = () => editSheet(c, id, p, () => renderPaper(id, hitPage));
   if (mayEdit(p)) $in(page, '#edit').append(c.el(`<p class="muted"><a href="#/remove/${c.esc(id)}">Remove this paper or its PDF…</a></p>`));
 
   // Any member can flag the PDF or the whole paper for an admin to review.

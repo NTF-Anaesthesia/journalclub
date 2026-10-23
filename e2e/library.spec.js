@@ -218,7 +218,7 @@ test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named pa
   // A second run finds nothing to change.
   await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
-  await expect(page.locator('#count')).toContainText('papers · Newest first');
+  await expect(page.locator('#count')).toContainText('papers · Recently discussed');
   await page.getByRole('button', { name: 'Select', exact: true }).click();
   for (const id of ['old1', 'atotw1']) await page.locator(`#res li[data-id="${id}"]`).click();
   await page.getByRole('button', { name: 'Refresh 2' }).click();

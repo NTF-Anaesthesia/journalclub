@@ -64,7 +64,7 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   const firstPage = Date.now() - t0;
   console.log(`first page of 1000 papers: ${firstPage} ms`);
   expect(firstPage).toBeLessThan(2000);
-  await expect(page.getByText('1000 papers · Newest first')).toBeVisible();
+  await expect(page.getByText('1000 papers · Recently discussed')).toBeVisible();
   await expect(page.locator('#res li').first()).toContainText('Seeded trial 0999');
   await expect.poll(() => stats(page)).toEqual({ mode: 'full', fetched: 1000, size: 1000 });
 
@@ -95,7 +95,7 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   await page.reload();
   await expect(page.locator('#res li').first()).toContainText('Seeded trial 0999');
   const repeat = Date.now() - t1;
-  await expect(page.getByText('1000 papers · Newest first')).toBeVisible();
+  await expect(page.getByText('1000 papers · Recently discussed')).toBeVisible();
   console.log(`repeat open: first rows ${repeat} ms; app timings ${JSON.stringify(await page.evaluate(() => window.__jcTiming))}`);
   expect(repeat).toBeLessThan(1000);
   await expect(page.locator('#res li')).toHaveCount(50);
