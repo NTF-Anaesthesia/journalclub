@@ -4,7 +4,7 @@ import {
   serverTimestamp, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
 import { buildIndex, searchPapers } from './search.js';
-import { findDoi } from './doi.js';
+import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
@@ -91,7 +91,7 @@ async function renderSearch() {
 
 async function renderAdd() {
   const page = c.el(`<section class="card"><h1>Add a paper</h1>
-    <form id="lf" class="row"><input id="pid" aria-label="DOI or PubMed ID" placeholder="DOI or PubMed ID" required>
+    <form id="lf" class="row"><input id="pid" aria-label="DOI or PubMed ID" placeholder="DOI, PubMed ID or ATOTW 551" required>
       <button class="primary">Look up</button></form>
     <p id="lmsg" class="muted">Paste a DOI (10.xxxx/…), a doi.org link or a PubMed ID.</p><div id="prev"></div></section>`);
   c.view.replaceChildren(page);
@@ -154,7 +154,7 @@ const fileTitle = (name) => name.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').tr
 async function renderImport() {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Import PDFs</h1>
     <p class="muted">Choose PDFs or a whole folder. Each paper's DOI is read from its first pages and the details filled in;
-      PDFs without a DOI are added under their file name. Papers already in the library are skipped.</p>
+      PDFs without a DOI are added under their file name; Anaesthesia Tutorial of the Week PDFs are found by their number (ATOTW 551). Papers already in the library are skipped.</p>
     <form id="if" class="stack">
       <label>PDF files <input type="file" id="files" accept="application/pdf" multiple></label>
       <label>Or a folder <input type="file" id="folder" webkitdirectory></label>
@@ -185,7 +185,8 @@ async function renderImport() {
         if (f.size > MAX_PDF) { say('Skipped: over 25 MB.', 'failed'); continue; }
         const buf = await f.arrayBuffer();
         const pages = await extractPages(buf.slice(0));
-        const found = findDoi(pages.slice(0, 2).join(' '));
+        // An ATOTW number in the file name wins: those PDFs may print no DOI, and page 2 can cite other papers.
+        const found = atotwDoi(f.name) || findDoi(pages.slice(0, 2).join(' ')) || atotwDoi(pages[0]);
         let p = null;
         if (found) {
           const r = await apiFetch('/api/lookup?id=' + encodeURIComponent(found));

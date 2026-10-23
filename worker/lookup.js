@@ -1,15 +1,18 @@
 // Paper lookups (Crossref, PubMed, Unpaywall). Pure functions plus one
 // orchestrator that takes fetch as an argument, so tests run on saved fixtures.
 import { xmlToText } from '../src/abstract.js';
+import { atotwDoi } from '../src/doi.js';
 
 const CROSSREF = 'https://api.crossref.org/works/';
 const EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=xml&id=';
 const ESEARCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term=';
 const UNPAYWALL = 'https://api.unpaywall.org/v2/';
 
-// "10.1/x", "doi:10.1/x", "https://doi.org/10.1/x", "PMID: 123", "123" -> { doi } or { pmid } or null.
+// "10.1/x", "doi:10.1/x", "https://doi.org/10.1/x", "ATOTW 551", "PMID: 123", "123" -> { doi } or { pmid } or null.
 export function parseId(input) {
   const s = String(input ?? '').trim();
+  const atotw = atotwDoi(s);
+  if (atotw) return { doi: atotw };
   const doi = /(10\.\d{4,9}\/\S+)/.exec(decodeURIComponent(s));
   if (doi) return { doi: doi[1].replace(/[.,;)\]]+$/, '').toLowerCase() };
   const pmid = /^(?:pmid:?\s*)?(\d{1,9})$/i.exec(s);
@@ -119,7 +122,7 @@ export async function lookup(input, fetchFn, email) {
     pmid: pm?.pmid || '',
     title: cr?.title || pm?.title || '',
     authors: cr?.authors?.length ? cr.authors : pm?.authors || [],
-    journal: cr?.journal || pm?.journal || '',
+    journal: cr?.journal || pm?.journal || (doi?.startsWith('10.28923/atotw.') ? 'Anaesthesia Tutorial of the Week' : ''),
     year: cr?.year || pm?.year || null,
     abstract: pm?.abstract || cr?.abstract || '',
     oa,

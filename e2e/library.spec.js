@@ -159,6 +159,24 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
   await expect(page.getByText(/Creative Commons|licence/i)).toHaveCount(0);
 });
 
+test('ATOTW PDFs with no printed DOI are found by the number in the file name or on the page', async ({ page }) => {
+  await fakeApi(page);
+  await signInAsMember(page, 'res3@example.org');
+  await page.goto('/?emulator#/');
+  await page.reload();
+  await page.getByRole('link', { name: 'Import PDFs' }).click();
+  await page.getByLabel('PDF files').setInputFiles([
+    { name: 'ATOTW 551 SGLT2.pdf', mimeType: 'application/pdf', buffer: makePdf('SGLT2 inhibitors and euglycaemic ketoacidosis') },
+  ]);
+  await page.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByText('Done: 1 added, 0 already there, 0 failed.')).toBeVisible();
+  await page.getByRole('link', { name: 'SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications' }).click();
+  await expect(page.getByText('Anaesthesia Tutorial of the Week')).toBeVisible();
+  await page.getByText('Abstract', { exact: true }).click();
+  await expect(page.locator('.abstract')).toContainText('This tutorial provides an overview');
+  await expect(page.locator('.abstract')).not.toContainText('jats');
+});
+
 test('paper page decodes stored entities in the title and abstract, and bolds section labels', async ({ page }) => {
   const uid = await signInAsMember(page, 'res2@example.org');
   // Stored the old way: hex entities left raw, labels as plain "LABEL: " text.
