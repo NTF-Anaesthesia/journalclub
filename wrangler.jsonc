@@ -6,6 +6,7 @@
     "run_worker_first": ["/__/*", "/api/*"] },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "journalclub-files" }],
   "d1_databases": [{ "binding": "SEARCH", "database_name": "journalclub-search", "database_id": "d1cf1430-55d5-4dc5-91cf-5cef550a3219" }],
+  "ai": { "binding": "AI" },
   "vars": { "CONTACT_EMAIL": "journalclub@anantf.com" },
   "routes": [{ "pattern": "journalclub.anantf.com", "custom_domain": true }]
 }

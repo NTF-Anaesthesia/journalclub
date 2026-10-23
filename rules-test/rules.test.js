@@ -125,12 +125,39 @@ test('admin refresh may rewrite bibliographic fields only; members and other fie
     { ...newPaper('mem1'), addedAt: new Date(), doi: '', pmid: '' }));
   const a = doc(as('admin1', 'a@x.org'), 'papers/r1'), m = doc(as('mem1', 'm@x.org'), 'papers/r1');
   await assertSucceeds(updateDoc(a, { title: 'New', journal: 'J2', authors: ['C D'], abstract: '10⁹/L', doi: '10.2/y', pmid: '7' }));
-  await assertFails(updateDoc(a, { doi: '10.3/z' }));      // doi already set
+  await assertSucceeds(updateDoc(a, { doi: '10.3/z' }));   // a wrong DOI can be corrected by hand (Refresh itself only fills an empty one: test/refresh.test.js)
   await assertFails(updateDoc(a, { title: '' }));
-  await assertFails(updateDoc(a, { year: 1999 }));
+  await assertSucceeds(updateDoc(a, { year: 1999, abstractSource: 'pdf' })); // Fill missing details
   await assertFails(updateDoc(a, { title: 'N', addedBy: 'admin1' }));
-  await assertFails(updateDoc(m, { abstract: 'member edit' }));
-  await assertFails(updateDoc(m, { title: 'member edit' }));
+  await assertFails(updateDoc(a, { title: 'N', file: null }));
+  await assertFails(updateDoc(m, { addedBy: 'admin1', title: 'N' }));
+});
+
+test('any member edits a paper\'s details by hand; fields are checked when they change; nothing else', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'papers/e1'), { ...newPaper('admin1'), addedAt: new Date(), year: null }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  const other = doc(as('mem2', 'm2@x.org'), 'papers/e1'); // not the adder
+  await assertSucceeds(updateDoc(other, { title: 'Corrected title', authors: ['E F'], journal: 'Anaesthesia', year: 2021, doi: '10.9/new',
+    pmid: '12345', abstract: 'Typed by hand', abstractSource: 'hand', manual: ['title', 'abstract'], changedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(other, { year: null }));
+  await assertSucceeds(updateDoc(other, { doi: '' }));
+  await assertSucceeds(updateDoc(other, { title: 'Again', tags: ['x'], why: 'w' }));
+  await assertFails(updateDoc(other, { title: '' }));
+  await assertFails(updateDoc(other, { title: 'x'.repeat(501) }));
+  await assertFails(updateDoc(other, { year: 1700 }));
+  await assertFails(updateDoc(other, { year: '2020' }));
+  await assertFails(updateDoc(other, { doi: 'not-a-doi' }));
+  await assertFails(updateDoc(other, { pmid: 'abc' }));
+  await assertFails(updateDoc(other, { abstract: 'x'.repeat(20001) }));
+  await assertFails(updateDoc(other, { abstractSource: 'guess' }));
+  await assertFails(updateDoc(other, { authors: Array.from({ length: 101 }, () => 'A') }));
+  await assertFails(updateDoc(other, { manual: Array.from({ length: 11 }, () => 'title') }));
+  await assertFails(updateDoc(other, { title: 'T', changedAt: new Date(2020, 0, 1) }));
+  await assertFails(updateDoc(other, { title: 'T', addedBy: 'mem2' }));
+  await assertFails(updateDoc(other, { title: 'T', file: { pages: 1 } }));
+  await assertFails(updateDoc(other, { title: 'T', presented: [] }));
+  await assertFails(updateDoc(doc(stranger(), 'papers/e1'), { title: 'T' }));
+  await assertFails(updateDoc(doc(as('nobody', 'n@x.org'), 'papers/e1'), { title: 'T' }));
 });
 
 test('members add papers as themselves; strangers cannot read or add', async () => {
@@ -144,16 +171,16 @@ test('members add papers as themselves; strangers cannot read or add', async () 
   await assertFails(getDoc(doc(stranger(), 'papers/p1')));
 });
 
-test('only the adder or an admin edits a paper, and only tags, why and file', async () => {
+test('only the adder or an admin changes a paper\'s file; any member tags it and edits its details', async () => {
   await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1')));
   await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), { tags: ['icu'], file: { pages: 3, basis: 'own' } }));
-  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), { title: 'Changed' }));
+  await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), { title: 'Changed' }));
   await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'papers/p1'), { why: 'admin edit' }));
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
-  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { why: 'not mine' }));
+  await assertSucceeds(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { why: 'any member edits details' }));
   // Any member tags any paper (bulk Add to… in select mode), tags only, up to 20.
   await assertSucceeds(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: ['icu', 'exam'], changedAt: serverTimestamp() }));
-  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: ['x'], why: 'sneaky' }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: ['x'], file: { pages: 9 } }));
   await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) }));
   await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { file: null }));
   // Old PDF text: no new writes; members read it (for the admin backfill); the adder or an admin deletes it.
@@ -298,7 +325,7 @@ test('a locked session is closed to its creator; a member keeps a paper\'s prese
   b.set(doc(m2, 'sessions/s1'), session('mem2'));
   b.update(doc(m2, 'papers/p1'), { presented: [{ sid: 's1', date: future() }] });
   await assertSucceeds(b.commit());
-  await assertFails(updateDoc(doc(m2, 'papers/p1'), { title: 'Renamed' }));
+  await assertFails(updateDoc(doc(m2, 'papers/p1'), { addedBy: 'mem2' }));
   await assertFails(updateDoc(doc(m2, 'papers/p1'), { presented: 'x' }));
   await assertFails(updateDoc(doc(as('nobody', 'n@x.org'), 'papers/p1'), { presented: [] }));
   await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'sessions/s1'), { locked: true }));

@@ -64,6 +64,13 @@ export async function indexedPapers(db) {
   return results.map((r) => r.paper);
 }
 
+// The text of a paper's first PDF pages (1..n), page 1 first; [] when it is not indexed.
+export async function firstPages(db, paperId, n = 3) {
+  await ensureSchema(db);
+  const { results } = await db.prepare('SELECT page, text FROM pages WHERE paper = ? AND page BETWEEN 1 AND ? ORDER BY page').bind(paperId, n).all();
+  return results.map((r) => r.text);
+}
+
 // Each word becomes a quoted prefix term; FTS5 ANDs them. Returns null when there is nothing to search.
 export function ftsQuery(q) {
   const words = String(q || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];

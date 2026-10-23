@@ -7,11 +7,12 @@ import {
 import { searchPapers, mergeHits } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
+import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
-import { sheet, snack, addToSheet, starSelected, refreshSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
+import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex', 'duplicates'];
@@ -21,6 +22,10 @@ let c;              // { db, user, member, view, el, esc } for the current rende
 const PAGE = 50;
 // The list's state, kept while moving between pages: search, filters, sort, rows shown, and a selection to restore.
 const ui = { q: '', filter: emptyFilter(), sort: 'newest', shown: PAGE, pendingSel: null };
+const ABSTRACT_NOTE = {
+  ai: 'Written by an AI from the PDF text, not by the authors. Check it against the paper.',
+  pdf: 'Taken from the PDF’s own abstract or summary.',
+};
 const AUTHORS_KEY = 'jc.showAuthors';
 const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) === '1'; } catch { return false; } };
 
@@ -309,6 +314,7 @@ async function renderSearch() {
     out.push(btn('star', allStarred ? 'Unstar' : 'Star', () => starSelected(c, ids, after)));
     out.push(btn('more', 'More', () => moreSheet(c, ids, {
       reindex: () => reindexSelected(c, ids, after, pick),
+      fill: () => fillSelected(c, ids, after, pick),
       remove: () => removeSelected(c, ids, () => { ids.forEach((id) => sel?.delete(id)); after(); }),
     })));
     selbar.style.gridTemplateColumns = `repeat(${out.length}, minmax(0, 1fr))`;
@@ -530,8 +536,9 @@ async function renderPaper(id, hitPage) {
     <p>${links}</p>
     <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
-    ${p.abstract ? `<details><summary>Abstract</summary><div class="abstract">${abstractSections(p.abstract)
+    ${p.abstract ? `<details><summary>${p.abstractSource === 'ai' ? 'AI summary' : 'Abstract'}</summary>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
       .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></details>` : ''}
+    ${(p.manual || []).length ? `<p class="muted" id="handnote">Edited by hand (${c.esc(p.manual.join(', '))}). <button type="button" class="link" id="unhand">Let Refresh update these again</button></p>` : ''}
     <h2>PDF</h2><div id="file"></div>
     <h2>Notes and ratings ${avg ? `<span class="muted">· ${avg}/5 from ${rated.length}</span>` : ''}</h2>
     <form id="nf" class="stack"><label>Your note <textarea id="note" rows="3" maxlength="4000"></textarea></label>
@@ -624,23 +631,16 @@ async function renderPaper(id, hitPage) {
   drawStar();
   const inl = [...(starred.has(id) ? ['Starred'] : []), ...lists.filter((l) => !l.starred && l.paperIds.includes(id)).map((l) => l.name)];
   $in(page, '#inlists').textContent = inl.length ? `In ${inl.join(', ')}` : 'Not in any of your lists yet.';
+  const unhand = page.querySelector('#unhand');
+  if (unhand) unhand.onclick = async () => { unhand.disabled = true; await releaseHand(c, id).catch(() => {}); renderPaper(id, hitPage); };
   $in(page, '#addto').onclick = () => { current() ? addToSheet(c, [id], () => renderPaper(id, hitPage)) : loadLibrary().then(() => addToSheet(c, [id], () => renderPaper(id, hitPage))); };
 
-  // Tags and why: the adder or an admin, who also get a link to the separate removal page.
-  if (mayEdit(p)) {
-    const ed = c.el(`<details><summary>Edit</summary><form id="ef" class="stack">
-      <label>Tags <input id="etags"></label><label>Why read it <input id="ewhy" maxlength="200"></label>
-      <button class="primary">Save</button></form>
-      <p class="muted"><a href="#/remove/${c.esc(id)}">Remove this paper or its PDF…</a></p></details>`);
-    $in(ed, '#etags').value = (p.tags || []).join(', ');
-    $in(ed, '#ewhy').value = p.why || '';
-    $in(ed, '#ef').onsubmit = async (e) => {
-      e.preventDefault();
-      await updateDoc(doc(c.db, 'papers', id), { tags: tagList($in(ed, '#etags').value), why: $in(ed, '#ewhy').value.trim(), changedAt: serverTimestamp() });
-      dirty(); renderPaper(id, hitPage);
-    };
-    $in(page, '#edit').append(ed);
-  }
+  // Edit details: any member (title, authors, journal, year, DOI, PubMed ID, abstract, tags, why). The adder or an
+  // admin also gets the link to the separate removal page.
+  const ed = c.el(`<p class="actions"><button type="button" id="editd">Edit details</button></p>`);
+  $in(ed, '#editd').onclick = () => editSheet(c, id, p, () => renderPaper(id, hitPage));
+  $in(page, '#edit').append(ed);
+  if (mayEdit(p)) $in(page, '#edit').append(c.el(`<p class="muted"><a href="#/remove/${c.esc(id)}">Remove this paper or its PDF…</a></p>`));
 
   // Any member can flag the PDF or the whole paper for an admin to review.
   const fl = c.el(`<details id="flagbox"><summary>Flag for removal</summary><form id="ff" class="stack">
