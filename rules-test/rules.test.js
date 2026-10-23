@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, collection, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, Timestamp } from 'firebase/firestore';
 
 let env;
 const HOUR = 3600 * 1000;
@@ -104,4 +104,58 @@ test('only admins change roles or remove members, never themselves', async () =>
 
 test('unknown collections are closed', async () => {
   await assertFails(getDoc(doc(as('admin1', 'a@x.org'), 'other/x')));
+});
+
+const newPaper = (uid, extra = {}) => ({
+  doi: '10.1/x', pmid: '', title: 'A trial', authors: ['A B'], journal: 'J', year: 2020, abstract: '',
+  oa: { status: 'closed', license: null, url: null }, tags: ['airway'], why: 'good', addedBy: uid, addedAt: serverTimestamp(), ...extra,
+});
+
+test('members add papers as themselves; strangers cannot read or add', async () => {
+  const m = as('mem1', 'm@x.org');
+  await assertSucceeds(setDoc(doc(m, 'papers/p1'), newPaper('mem1')));
+  await assertFails(setDoc(doc(m, 'papers/p2'), newPaper('admin1')));
+  await assertFails(setDoc(doc(m, 'papers/p3'), newPaper('mem1', { file: { basis: 'own' } })));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'papers/p4'), newPaper('nobody')));
+  await assertSucceeds(getDoc(doc(as('admin1', 'a@x.org'), 'papers/p1')));
+  await assertFails(getDoc(doc(as('nobody', 'n@x.org'), 'papers/p1')));
+  await assertFails(getDoc(doc(stranger(), 'papers/p1')));
+});
+
+test('only the adder or an admin edits a paper, and only tags, why and file', async () => {
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1')));
+  await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), { tags: ['icu'], file: { pages: 3, basis: 'own' } }));
+  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), { title: 'Changed' }));
+  await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'papers/p1'), { why: 'admin edit' }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1'), { why: 'not mine' }));
+  await assertFails(setDoc(doc(as('mem2', 'm2@x.org'), 'texts/p1'), { pages: ['x'] }));
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'texts/p1'), { pages: ['page one'] }));
+  await assertSucceeds(getDoc(doc(as('mem2', 'm2@x.org'), 'texts/p1')));
+  await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'papers/p1')));
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1')));
+});
+
+test('one note and rating per member, written only by that member', async () => {
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1')));
+  const note = (r) => ({ text: 'useful', rating: r, name: 'M', updatedAt: serverTimestamp() });
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), note(4)));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/admin1'), note(4)));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), note(9)));
+  await assertSucceeds(getDocs(collectionGroup(as('admin1', 'a@x.org'), 'notes')));
+  await assertFails(getDocs(collectionGroup(as('nobody', 'n@x.org'), 'notes')));
+});
+
+test('reading lists: members create; only the maker or an admin edits', async () => {
+  const list = (uid) => ({ name: 'Part 1 exam', about: '', paperIds: [], createdBy: uid, createdAt: serverTimestamp() });
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), list('mem1')));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'lists/l2'), list('admin1')));
+  await assertFails(setDoc(doc(as('nobody', 'n@x.org'), 'lists/l3'), list('nobody')));
+  await assertSucceeds(updateDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), { paperIds: ['p1'] }));
+  await assertFails(updateDoc(doc(as('mem1', 'm@x.org'), 'lists/l1'), { createdBy: 'admin1' }));
+  await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'lists/l1'), { name: 'Renamed' }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  await assertFails(updateDoc(doc(as('mem2', 'm2@x.org'), 'lists/l1'), { paperIds: [] }));
+  await assertFails(deleteDoc(doc(as('mem2', 'm2@x.org'), 'lists/l1')));
+  await assertSucceeds(deleteDoc(doc(as('mem1', 'm@x.org'), 'lists/l1')));
 });

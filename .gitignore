@@ -4,3 +4,5 @@ public/app.js
 firebase-debug.log
 firestore-debug.log
 test-results/
+public/chunks/
+public/pdf.worker.min.mjs

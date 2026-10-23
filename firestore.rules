@@ -52,6 +52,58 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Library. Members read everything; the person who added a paper (or an admin) edits it.
+    function paper(pid) { return get(/databases/$(database)/documents/papers/$(pid)).data; }
+    function mayEditPaper(pid) { return isAdmin() || (isMember() && paper(pid).addedBy == request.auth.uid); }
+
+    match /papers/{pid} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['doi', 'pmid', 'title', 'authors', 'journal', 'year', 'abstract',
+             'oa', 'tags', 'why', 'addedBy', 'addedAt'])
+        && request.resource.data.addedBy == request.auth.uid
+        && request.resource.data.addedAt == request.time
+        && request.resource.data.title is string && request.resource.data.title.size() > 0
+        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
+      allow update: if mayEditPaper(pid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file'])
+        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
+      allow delete: if mayEditPaper(pid);
+
+      // One note and rating per member per paper.
+      match /notes/{uid} {
+        allow write: if isMember() && request.auth.uid == uid
+          && (request.method == 'delete' || (
+            request.resource.data.keys().hasOnly(['text', 'rating', 'name', 'updatedAt'])
+            && request.resource.data.text is string && request.resource.data.text.size() <= 4000
+            && request.resource.data.rating is int && request.resource.data.rating >= 0 && request.resource.data.rating <= 5
+            && request.resource.data.updatedAt == request.time));
+      }
+    }
+    match /{path=**}/notes/{uid} { allow read: if isMember(); }
+
+    // PDF text per page, written at upload by whoever may edit the paper.
+    match /texts/{pid} {
+      allow read: if isMember();
+      allow write: if mayEditPaper(pid)
+        && (request.method == 'delete' || (request.resource.data.keys().hasOnly(['pages']) && request.resource.data.pages is list));
+    }
+
+    // Reading lists: any member makes one; its maker or an admin edits it.
+    match /lists/{lid} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['name', 'about', 'paperIds', 'createdBy', 'createdAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.name is string && request.resource.data.name.size() > 0
+        && request.resource.data.paperIds is list;
+      allow update: if (isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'about', 'paperIds'])
+        && request.resource.data.paperIds is list && request.resource.data.paperIds.size() <= 500;
+      allow delete: if isAdmin() || (isMember() && resource.data.createdBy == request.auth.uid);
+    }
+
     match /{document=**} { allow read, write: if false; }
   }
 }

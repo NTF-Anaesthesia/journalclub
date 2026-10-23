@@ -8,6 +8,7 @@ import {
   writeBatch, serverTimestamp, Timestamp, query, orderBy,
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
+import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
 // On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.
@@ -50,8 +51,8 @@ async function loadMember() {
 
 function route() {
   const hash = location.hash.replace(/^#\/?/, '');
-  const [name, arg] = hash.split('/');
-  return { name: name || 'home', arg };
+  const [name, arg, arg2] = hash.split('/');
+  return { name: name || 'home', arg, arg2 };
 }
 
 function render() {
@@ -62,14 +63,16 @@ function render() {
   if (!user) return renderSignedOut();
   if (!member) return renderNotMember();
   if (r.name === 'admin') return member.role === 'admin' ? renderAdmin() : renderDenied();
-  return renderHome();
+  if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, { db, user, member, view, el, esc });
+  return renderLibraryRoute({ name: 'library' }, { db, user, member, view, el, esc });
 }
 
 function renderBar() {
   const bar = $('#bar');
   if (!user) { bar.replaceChildren(); return; }
+  const nav = member ? '<a href="#/">Library</a> <a href="#/lists">Lists</a>' : '';
   const admin = member?.role === 'admin' ? '<a href="#/admin">Admin</a>' : '';
-  bar.replaceChildren(el(`<span>${admin} <span class="muted">${esc(user.email)}</span> <button id="out" class="link">Sign out</button></span>`));
+  bar.replaceChildren(el(`<nav>${nav} ${admin} <span class="muted who">${esc(user.email)}</span> <button id="out" class="link">Sign out</button></nav>`));
   $('#out').onclick = () => signOut(auth);
 }
 
@@ -99,11 +102,6 @@ function renderNotMember() {
 
 function renderDenied() {
   view.replaceChildren(el('<section class="card"><h1>Admins only</h1><p><a href="#/">Back</a></p></section>'));
-}
-
-function renderHome() {
-  view.replaceChildren(el(`<section class="card"><h1>Welcome, ${esc(member.name || user.email)}</h1>
-    <p>You are a member. The library and journal club arrive in the next releases.</p></section>`));
 }
 
 async function renderJoin(token) {
