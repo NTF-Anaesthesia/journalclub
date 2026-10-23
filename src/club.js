@@ -10,7 +10,7 @@ let c;              // { db, user, member, view, el, esc } for the current rende
 
 const $in = (root, sel) => root.querySelector(sel);
 const isAdmin = () => c.member.role === 'admin';
-const fmtDate = (ts) => ts.toDate().toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+const fmtDate = (ts) => ts.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return Timestamp.fromDate(d); };
 const safeUrl = (u) => (/^https:\/\/[^\s"<>]+$/.test(u || '') ? u : '');
 const rotaRef = () => doc(c.db, 'rota', 'main');

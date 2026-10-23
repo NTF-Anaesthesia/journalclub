@@ -62,6 +62,7 @@ function render() {
   const r = route();
   if (r.name === 'join' && r.arg) return renderJoin(r.arg);
   if (!user) return renderSignedOut();
+  if (r.name === 'me') return renderMe();
   if (!member) return renderNotMember();
   if (r.name === 'admin') return member.role === 'admin' ? renderAdmin() : renderDenied();
   const ctx = { db, user, member, view, el, esc };
@@ -70,13 +71,55 @@ function render() {
   return renderClubRoute({ name: 'home' }, ctx);
 }
 
+// Bottom tab bar (members only) and the top bar: its title fades in once the page's large title scrolls away.
+const TABS = [
+  ['', 'Home', '<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/>'],
+  ['library', 'Library', '<path d="M4 5c3-1 6-1 8 1v14c-2-2-5-2-8-1zM20 5c-3-1-6-1-8 1v14c2-2 5-2 8-1z"/>'],
+  ['lists', 'Lists', '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'],
+  ['vote', 'Vote', '<path d="M7 11V20H4v-9zM7 11l4-7c1.5 0 2.5 1 2.2 2.6L12.6 10H18a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'],
+  ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
+];
+const TAB_OF = { '': '', home: '', library: 'library', add: 'library', paper: 'library', lists: 'lists', list: 'lists',
+  vote: 'vote', sessions: 'sessions', session: 'sessions', rota: 'sessions' };
+const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
+
 function renderBar() {
-  const bar = $('#bar');
+  const bar = $('#bar'), tabbar = $('#tabbar');
+  const on = !!(user && member);
+  tabbar.hidden = !on;
+  document.body.classList.toggle('app-has-tabbar', on);
   if (!user) { bar.replaceChildren(); return; }
-  const nav = member ? '<a href="#/">Home</a> <a href="#/library">Library</a> <a href="#/lists">Lists</a> <a href="#/vote">Vote</a> <a href="#/sessions">Sessions</a>' : '';
-  const admin = member?.role === 'admin' ? '<a href="#/admin">Admin</a>' : '';
-  bar.replaceChildren(el(`<nav>${nav} ${admin} <span class="muted who">${esc(user.email)}</span> <button id="out" class="link">Sign out</button></nav>`));
-  $('#out').onclick = () => signOut(auth);
+  bar.replaceChildren(el(`<a class="app-bar-btn" href="#/me" aria-label="Account">${PERSON}</a>`));
+  if (!on) return;
+  const cur = TAB_OF[route().name] ?? null;
+  $('#tabs').innerHTML = TABS.map(([k, t, icon]) => `<a class="app-tab" href="#/${k}"${k === cur ? ' aria-current="page"' : ''}>
+    <span class="app-tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg></span><span>${t}</span></a>`).join('');
+}
+
+let titleWatch = null;
+function watchTitle() {
+  titleWatch?.disconnect();
+  const top = $('#topbar'), h = view.querySelector('h1');
+  $('#bar-title').textContent = h?.textContent.trim() || 'Journal Club';
+  if (!h || !('IntersectionObserver' in window)) { top.classList.add('is-collapsed'); return; }
+  top.classList.toggle('is-collapsed', h.getBoundingClientRect().bottom < 56);
+  titleWatch = new IntersectionObserver(([e]) => top.classList.toggle('is-collapsed', !e.isIntersecting), { rootMargin: '-56px 0px 0px 0px' });
+  titleWatch.observe(h);
+}
+// Pages render asynchronously; re-attach the watcher whenever the page's heading changes.
+let lastH1 = null;
+new MutationObserver(() => { const h = view.querySelector('h1'); if (h !== lastH1) { lastH1 = h; watchTitle(); } })
+  .observe(view, { childList: true, subtree: true });
+
+function renderMe() {
+  const admin = member?.role === 'admin';
+  const page = el(`<section class="card"><h1>Account</h1>
+    <ul class="list"><li><span>${esc(member?.name || user.displayName || '')}<br><span class="muted">${esc(user.email)}</span></span>
+      ${member ? `<span class="muted">${esc(member.role)}</span>` : ''}</li></ul>
+    ${member ? `<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/rota">Presenter rota</a></li>${admin ? '<li><a href="#/admin">Admin</a></li>' : ''}</ul>` : ''}
+    <p><button id="out" class="danger-btn">Sign out</button></p></section>`);
+  page.querySelector('#out').onclick = () => signOut(auth);
+  view.replaceChildren(page);
 }
 
 function signInButton() {
@@ -218,5 +261,5 @@ onAuthStateChanged(auth, async (u) => {
   render();
 });
 getRedirectResult(auth).catch((e) => alert('Sign-in failed: ' + e.code));
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 render();

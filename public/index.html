@@ -1,15 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB" class="app" data-theme="light">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
-<title>Journal Club</title>
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#f1ede4">
+<title>Journal Club · NTF Anaesthesia</title>
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Journal Club">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- NTF Anaesthesia app kit, shared by the anantf.com apps (served from the site, not copied here) -->
+<link rel="stylesheet" href="https://anantf.com/assets/app/app.css">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<header><strong>Journal Club</strong><span id="bar"></span></header>
-<main id="view"><p class="muted">Loading…</p></main>
+<body class="app-body">
+<a class="app-skip" href="#view">Skip to content</a>
+<header class="app-bar" id="topbar">
+  <div class="app-bar-row">
+    <div class="app-bar-lead" id="bar-lead"></div>
+    <p class="app-bar-title" id="bar-title" aria-hidden="true">Journal Club</p>
+    <div class="app-bar-trail" id="bar"></div>
+  </div>
+</header>
+<main class="app-main" id="view" tabindex="-1"><p class="app-muted">Loading…</p></main>
+<nav class="app-tabbar" id="tabbar" aria-label="Journal Club" hidden><div class="app-tabbar-inner" id="tabs"></div></nav>
 <script type="module" src="app.js"></script>
 </body>
 </html>
