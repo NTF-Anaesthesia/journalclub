@@ -120,6 +120,19 @@ test('changedAt, when sent, must be the server time on create and update', async
   await assertSucceeds(updateDoc(doc(m, 'papers/c1'), { why: 'no stamp' }));
 });
 
+test('admin refresh may rewrite bibliographic fields only; members and other fields cannot', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'papers/r1'),
+    { ...newPaper('mem1'), addedAt: new Date(), doi: '', pmid: '' }));
+  const a = doc(as('admin1', 'a@x.org'), 'papers/r1'), m = doc(as('mem1', 'm@x.org'), 'papers/r1');
+  await assertSucceeds(updateDoc(a, { title: 'New', journal: 'J2', authors: ['C D'], abstract: '10⁹/L', doi: '10.2/y', pmid: '7' }));
+  await assertFails(updateDoc(a, { doi: '10.3/z' }));      // doi already set
+  await assertFails(updateDoc(a, { title: '' }));
+  await assertFails(updateDoc(a, { year: 1999 }));
+  await assertFails(updateDoc(a, { title: 'N', addedBy: 'admin1' }));
+  await assertFails(updateDoc(m, { abstract: 'member edit' }));
+  await assertFails(updateDoc(m, { title: 'member edit' }));
+});
+
 test('members add papers as themselves; strangers cannot read or add', async () => {
   const m = as('mem1', 'm@x.org');
   await assertSucceeds(setDoc(doc(m, 'papers/p1'), newPaper('mem1')));
@@ -200,6 +213,10 @@ test('sessions: any member plans one as themselves; creator, presenter, coordina
   await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { summary: 'Key points', slides: 'https://example.org/s' }));
   await assertSucceeds(updateDoc(doc(m3, 'sessions/s1'), { coordinatorName: 'M3 renamed' }));
   await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slides: 'javascript:alert(1)' }));
+  await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'Talk.pptx', size: 1200, kind: 'pptx', pdf: true }, slides: '' }));
+  await assertSucceeds(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: {} }));
+  await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'x.exe', size: 1, kind: 'exe', pdf: false } }));
+  await assertFails(updateDoc(doc(m1, 'sessions/s1'), { slidesFile: { name: 'x.pdf', size: 1, kind: 'pdf', pdf: true, url: 'https://x' } }));
   // Locking and the form override stay with admins.
   await assertFails(updateDoc(doc(m2, 'sessions/s1'), { locked: true }));
   await assertFails(updateDoc(doc(m2, 'sessions/s1'), { template: [] }));

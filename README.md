@@ -5,7 +5,7 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
 - `public/`: static shell. `src/app.js` is bundled to `public/app.js` (`npm run build`).
 - `worker/index.js`: Cloudflare Worker serving `public/` (`wrangler.jsonc`) and the members-only API:
   `GET /api/lookup?id=<DOI or PMID>` (Crossref, PubMed, Unpaywall; `worker/lookup.js`) and `/api/file/<paper>`
-  (PDFs in the private R2 bucket `journalclub-files`). The Worker has no service account: it reads the caller's own
+  (PDFs in the private R2 bucket `journalclub-files`), and `/api/slides/<session>` (`worker/slides.js`). The Worker has no service account: it reads the caller's own
   member row from the Firestore REST API with the caller's ID token, so the rules decide.
 - PDFs: the person who added a paper (or an admin) can upload its PDF; there is no licence check. `#/import` takes many
   PDFs or a folder at once: it reads each DOI from the first pages (`src/doi.js`), fills in the details by lookup, names
@@ -50,3 +50,12 @@ Unit and e2e tests use a local D1 through wrangler (`test/d1.js`), with no Cloud
 The Worker binds the bucket `journalclub-files` as `FILES`; create it once with `npx wrangler r2 bucket create journalclub-files`
 (R2 must be enabled on the Cloudflare account). Without the binding the file routes answer 503 and the rest works.
 `CONTACT_EMAIL` is the address Unpaywall asks API callers to send.
+
+## Slides
+
+A session's creator, presenter, coordinator or an admin uploads a PDF or PowerPoint (up to 50 MB), or pastes a share link
+(Google Slides, Drive, OneDrive/SharePoint, Dropbox or a direct link): the Worker pulls the file itself and refuses a link it
+cannot download. R2 keeps `slides/<session>/original` (PowerPoint) and `slides/<session>/pdf`; the session doc keeps
+`slidesFile: {name, size, kind, pdf}`. PowerPoint is turned into a PDF by CloudConvert (Worker secret `CLOUDCONVERT_KEY`,
+`npx wrangler secret put CLOUDCONVERT_KEY`); Google Slides links use Google's own PDF export. Without the key, PowerPoint
+is still saved and the page says there is no PDF copy.

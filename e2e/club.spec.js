@@ -46,6 +46,14 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
   await expect(res.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
+  // A presenter name that matches no member warns before saving (they could not edit the summary or slides).
+  await res.getByRole('link', { name: /Edit the plan/ }).click();
+  await res.getByLabel('Presenter').fill('Dr Nobody');
+  await res.getByRole('button', { name: 'Save' }).click();
+  await expect(res.getByText(/Dr Nobody isn't linked to a member account/)).toBeVisible();
+  await res.goBack();
+  await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
+
   // The paper page shows the session; the library list shows the Presented badge.
   await res.goto('/?emulator#/paper/pb');
   await expect(res.locator('#jc').getByRole('link').first()).toBeVisible();
@@ -60,10 +68,31 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.getByRole('heading', { name: 'Next session' })).toBeVisible();
   await res.locator('#next a').click();
   await res.getByLabel('Summary').fill('Reversal choice and PPCs: no difference in the primary outcome.');
-  await res.getByLabel('Slides link').fill('https://example.org/slides');
   await res.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(res.locator('#ssum')).toHaveText('Reversal choice and PPCs: no difference in the primary outcome.');
-  await expect(res.getByRole('link', { name: 'Open slides' })).toHaveAttribute('href', 'https://example.org/slides');
+
+  // Slides: a PowerPoint upload (the Worker is faked here) shows Open PDF and Download PowerPoint.
+  const sent = [];
+  await res.route('**/api/slides/**', async (route) => {
+    const r = route.request();
+    sent.push(`${r.method()} ${r.headers()['x-file-name'] || ''}`);
+    if (r.method() === 'PUT') return route.fulfill({ json: { name: 'Reversal talk.pptx', size: 2400000, kind: 'pptx', pdf: true } });
+    if (r.method() === 'POST') return route.fulfill({ status: 422, json: { error: 'Could not pull the slides from that link. Share it as "Anyone with the link can view", or upload the file.' } });
+    return route.fulfill({ json: { ok: true } });
+  });
+  await res.getByLabel('Or pull from a link').fill('https://docs.google.com/presentation/d/private/edit');
+  await res.getByRole('button', { name: 'Add slides' }).click();
+  await expect(res.locator('#smsg')).toContainText('Anyone with the link');
+  await res.getByLabel('Or pull from a link').fill('');
+  await res.getByLabel('Upload slides (PDF or PowerPoint)').setInputFiles({ name: 'Reversal talk.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer: Buffer.from('PK') });
+  await res.getByRole('button', { name: 'Add slides' }).click();
+  await expect(res.getByRole('button', { name: 'Open PDF' })).toBeVisible();
+  await expect(res.getByRole('button', { name: 'Download PowerPoint' })).toBeVisible();
+  await expect(res.locator('#sslides')).toContainText('Reversal talk.pptx · 2.3 MB');
+  expect(sent).toEqual(['POST ', 'PUT Reversal%20talk.pptx']);
+  res.once('dialog', (d) => d.accept());
+  await res.getByRole('button', { name: 'Remove slides' }).click();
+  await expect(res.locator('#sslides')).toHaveText('No slides yet.');
 
   // Another member cannot edit the plan; the creator can delete it and the badge goes.
   const other = await signInAs(browser, 'other@example.org', 'Olu Other', 'member');

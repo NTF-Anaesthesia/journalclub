@@ -4,8 +4,9 @@ import {
   query, where, orderBy, limit, serverTimestamp, arrayUnion, arrayRemove, Timestamp,
 } from 'firebase/firestore';
 import { buildIndex, updateIndex, searchPapers, mergeHits } from './search.js';
-import { findDoi } from './doi.js';
-import { abstractSections } from './abstract.js';
+import { findDoi, atotwDoi } from './doi.js';
+import { abstractSections, cleanPaper } from './abstract.js';
+import { mountRefresh } from './refresh.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
@@ -46,18 +47,18 @@ async function loadLibrary() {
   if (!papers && since) {
     try {
       const cached = await getDocsFromCache(col);
-      if (!cached.empty) papers = new Map(cached.docs.map((d) => [d.id, d.data()]));
+      if (!cached.empty) papers = new Map(cached.docs.map((d) => [d.id, cleanPaper(d.data())]));
     } catch { /* no cache */ }
   }
   if (papers && since) {
     const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))), getCountFromServer(col)]);
-    delta.docs.forEach((d) => { papers.set(d.id, d.data()); if (lib?.built) updateIndex(lib.built, d.id, d.data()); });
+    delta.docs.forEach((d) => { papers.set(d.id, cleanPaper(d.data())); if (lib?.built) updateIndex(lib.built, d.id, papers.get(d.id)); });
     fetched = delta.size;
     if (papers.size !== count.data().count) papers = null;
   }
   if (!papers || !since) {
     const all = await getDocs(col);
-    papers = new Map(all.docs.map((d) => [d.id, d.data()]));
+    papers = new Map(all.docs.map((d) => [d.id, cleanPaper(d.data())]));
     fetched = all.size; mode = 'full'; since = null;
   }
   const t = newest(papers, since);
@@ -113,6 +114,7 @@ async function renderSearch() {
     <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul>
     <p><button id="more" class="link" hidden>Show more</button></p></section>`);
   c.view.replaceChildren(page);
+  if (c.member.role === 'admin') mountRefresh(page, c, dirty);
   const q = $in(page, '#q'), res = $in(page, '#res'), more = $in(page, '#more'), count = $in(page, '#count');
   q.value = lastQuery;
   // First open on this device (nothing cached): show the newest papers from a small query while the catalogue loads.
@@ -160,7 +162,7 @@ async function renderSearch() {
 
 async function renderAdd() {
   const page = c.el(`<section class="card"><h1>Add a paper</h1>
-    <form id="lf" class="row"><input id="pid" aria-label="DOI or PubMed ID" placeholder="DOI or PubMed ID" required>
+    <form id="lf" class="row"><input id="pid" aria-label="DOI or PubMed ID" placeholder="DOI, PubMed ID or ATOTW 551" required>
       <button class="primary">Look up</button></form>
     <p id="lmsg" class="muted">Paste a DOI (10.xxxx/…), a doi.org link or a PubMed ID.</p><div id="prev"></div></section>`);
   c.view.replaceChildren(page);
@@ -225,7 +227,7 @@ const fileTitle = (name) => name.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').tr
 async function renderImport() {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Import PDFs</h1>
     <p class="muted">Choose PDFs or a whole folder. Each paper's DOI is read from its first pages and the details filled in;
-      PDFs without a DOI are added under their file name. Papers already in the library are skipped.</p>
+      PDFs without a DOI are added under their file name; Anaesthesia Tutorial of the Week PDFs are found by their number (ATOTW 551). Papers already in the library are skipped.</p>
     <form id="if" class="stack">
       <label>PDF files <input type="file" id="files" accept="application/pdf" multiple></label>
       <label>Or a folder <input type="file" id="folder" webkitdirectory></label>
@@ -256,7 +258,8 @@ async function renderImport() {
         if (f.size > MAX_PDF) { say('Skipped: over 25 MB.', 'failed'); continue; }
         const buf = await f.arrayBuffer();
         const pages = await extractPages(buf.slice(0));
-        const found = findDoi(pages.slice(0, 2).join(' '));
+        // An ATOTW number in the file name wins: those PDFs may print no DOI, and page 2 can cite other papers.
+        const found = atotwDoi(f.name) || findDoi(pages.slice(0, 2).join(' ')) || atotwDoi(pages[0]);
         let p = null;
         if (found) {
           const r = await apiFetch('/api/lookup?id=' + encodeURIComponent(found));
@@ -298,7 +301,7 @@ async function openPdf(id, page) {
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { forget(id); c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
-  const p = snap.data();
+  const p = cleanPaper(snap.data());
   const [ns, ls] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')), getDocs(collection(c.db, 'lists'))]);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
   const mine = notes.find((n) => n.uid === c.user.uid);
@@ -447,7 +450,7 @@ async function renderPaper(id, hitPage) {
 async function renderRemove(id) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
-  const p = snap.data();
+  const p = cleanPaper(snap.data());
   if (!mayEdit(p)) { c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who added this paper, or an admin, can remove it.</p><p><a href="#/paper/${c.esc(id)}">Back to the paper</a></p></section>`)); return; }
   const page = c.el(`<section class="card"><p><a href="#/paper/${c.esc(id)}">← Back to the paper</a></p><h1>Remove</h1>
     <p><strong>${c.esc(p.title)}</strong></p>

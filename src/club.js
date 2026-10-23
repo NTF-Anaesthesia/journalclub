@@ -1,11 +1,13 @@
 // Journal club pages: home (next session), the Plan a session sheet, session pages.
 import qrcode from 'qrcode-generator';
+import { decodeEntities, cleanPaper } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, query, where, orderBy,
   limit, writeBatch, serverTimestamp, Timestamp,
 } from 'firebase/firestore';
 
 import { dirty as dirtyLibrary } from './library.js';
+import { personIndex } from './people.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
   sessionMarkdown, csvExport,
@@ -21,6 +23,14 @@ const isAdmin = () => c.member.role === 'admin';
 const fmtDate = (ts) => ts.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return Timestamp.fromDate(d); };
 const safeUrl = (u) => (/^https:\/\/[^\s"<>]+$/.test(u || '') ? u : '');
+const MAX_SLIDES = 50 * 1024 * 1024;
+const SLIDE_TYPES = '.pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+async function apiFetch(path, init = {}) {
+  const token = await c.user.getIdToken();
+  return fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
+}
 
 // Club settings (Teams link, prompt, default start time) and the default discussion form live in config/*.
 export async function loadClub(ctx = c) {
@@ -58,7 +68,7 @@ async function renderHome() {
   const [next, club] = await Promise.all([nextSession(), loadClub()]);
   $in(page, '#next').replaceChildren(next
     ? c.el(`<p class="next"><a href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
-        ${c.esc(next.paperTitle)}<br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`)
+        ${c.esc(decodeEntities(next.paperTitle))}<br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`)
     : c.el('<p class="muted">No session planned yet.</p>'));
   const url = next && safeUrl(next.teamsUrl || club.teamsUrl);
   if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
@@ -77,7 +87,7 @@ async function renderSessions() {
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
-      <span>${c.esc(s.paperTitle)}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
+      <span>${c.esc(decodeEntities(s.paperTitle))}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
     if (s.date.toMillis() >= today) up.append(li); else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
@@ -155,14 +165,22 @@ async function renderPlan(paperId, sid) {
     return;
   }
   const [ps, ss, club] = await Promise.all([getDocs(collection(c.db, 'papers')), getDocs(collection(c.db, 'sessions')), loadClub()]);
-  const papers = ps.docs.map((d) => ({ id: d.id, title: d.data().title, hay: `${d.data().title} ${(d.data().authors || []).join(' ')} ${d.data().year || ''}`.toLowerCase() }));
+  const papers = ps.docs.map((d) => cleanPaper({ id: d.id, ...d.data() }))
+    .map((p) => ({ id: p.id, title: p.title, hay: `${p.title} ${p.authors.join(' ')} ${p.year || ''}`.toLowerCase() }));
   // Names for the pickers: people on earlier sessions, plus the whole member list for admins (members can't list it).
   const people = new Map();
   const note = (name, uid) => { if (name && (uid || !people.has(name))) people.set(name, uid || ''); };
   ss.forEach((d) => { const x = d.data(); note(x.presenterName, x.presenterUid); note(x.coordinatorName, x.coordinatorUid); });
   const me = c.member.name || c.user.displayName || c.user.email;
   note(me, c.user.uid);
-  if (isAdmin()) (await getDocs(collection(c.db, 'members'))).forEach((d) => note(d.data().name || d.data().email, d.id));
+  const linked = [...people].map(([name, uid]) => ({ name, uid }));
+  linked.push({ name: me, uid: c.user.uid, email: c.user.email });
+  if (isAdmin()) (await getDocs(collection(c.db, 'members'))).forEach((d) => {
+    note(d.data().name || d.data().email, d.id);
+    linked.push({ name: d.data().name, uid: d.id, email: d.data().email });
+  });
+  const findUid = personIndex(linked);
+  let warned = '';
 
   const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'sessions'}">← ${sid ? 'Session' : 'Sessions'}</a></p>
     <h1>${sid ? 'Edit session' : 'Plan a session'}</h1>
@@ -179,7 +197,7 @@ async function renderPlan(paperId, sid) {
   const form = $in(page, '#pf'); const msg = $in(form, '#smsg');
   const find = $in(form, '#spaper'); const pick = $in(form, '#spick');
 
-  let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: old.paperTitle } : null);
+  let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: decodeEntities(old.paperTitle) } : null);
   if (paper) find.value = paper.title;
   find.oninput = () => {
     const q = find.value.trim().toLowerCase();
@@ -200,7 +218,7 @@ async function renderPlan(paperId, sid) {
   date.value = old ? isoDay(old.date.toDate()) : usualDate(club);
   const clash = () => {
     const same = ss.docs.filter((d) => d.id !== sid && date.value && isoDay(d.data().date.toDate()) === date.value);
-    $in(form, '#sclash').textContent = same.length ? `Already planned that day: ${same.map((d) => d.data().paperTitle).join('; ')}` : '';
+    $in(form, '#sclash').textContent = same.length ? `Already planned that day: ${same.map((d) => decodeEntities(d.data().paperTitle)).join('; ')}` : '';
   };
   date.onchange = clash; clash();
   $in(form, '#spres').value = old ? old.presenterName : me;
@@ -213,10 +231,18 @@ async function renderPlan(paperId, sid) {
     const teams = $in(form, '#steams').value.trim();
     if (teams && !safeUrl(teams)) { msg.textContent = 'The Teams link must start with https://'; return; }
     const pres = $in(form, '#spres').value.trim(); const coord = $in(form, '#scoord').value.trim();
+    const presUid = people.get(pres) || findUid(pres);
+    // A presenter not linked to a member can add a point but not the summary, slides or discussion: say so once.
+    if (pres && !presUid && warned !== pres) {
+      warned = pres;
+      msg.textContent = `${pres} isn't linked to a member account, so they won't be able to edit the summary, slides or discussion. `
+        + 'Pick them from the list (or invite them first), or press Save again to keep the name only.';
+      return;
+    }
     const when = Timestamp.fromDate(new Date(`${date.value}T00:00:00`));
     const plan = {
       date: when, paperId: paper.id, paperTitle: paper.title,
-      presenterUid: people.get(pres) || '', presenterName: pres, coordinatorUid: people.get(coord) || '', coordinatorName: coord,
+      presenterUid: presUid, presenterName: pres, coordinatorUid: people.get(coord) || findUid(coord), coordinatorName: coord,
     };
     msg.textContent = 'Saving…';
     try {
@@ -235,6 +261,7 @@ async function renderPlan(paperId, sid) {
 
 async function deleteSession(snap) {
   const s = snap.data();
+  if (s.slidesFile?.kind) await apiFetch(`/api/slides/${snap.id}`, { method: 'DELETE' }).catch(() => {});
   const b = writeBatch(c.db);
   b.delete(snap.ref);
   await setPresented(b, s.paperId, snap.id, null);
@@ -254,16 +281,21 @@ async function renderSession(sid) {
   const points = pts.docs.map((d) => d.data());
   const fields = sessionFields(s, template);
   const slides = safeUrl(s.slides);
+  const sf = s.slidesFile?.kind ? s.slidesFile : null;
+  const slidesHtml = sf
+    ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
+       <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
+    : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
   const me = c.user.uid;
   const mayFill = isAdmin() || (!s.locked && [s.createdBy, s.presenterUid, s.coordinatorUid].includes(me));
   const page = c.el(`<section class="card"><p><a href="#/sessions">← Sessions</a></p>
     <h1>${c.esc(fmtDate(s.date))}</h1>
-    <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(s.paperTitle)}</a></p>
+    <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(decodeEntities(s.paperTitle))}</a></p>
     <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
     ${s.coordinatorName ? `<p class="muted">Coordinator: ${c.esc(s.coordinatorName)}</p>` : ''}
     ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
-    <h2>Slides</h2><p>${slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides link yet.</span>'}</p>
+    <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
     <h2>Members' points</h2><ul class="list" id="spts"></ul>
     <div id="sqr"></div>
@@ -288,25 +320,23 @@ async function renderSession(sid) {
     catch { e.target.textContent = 'Copy failed'; }
   };
   $in(page, '#sprint').onclick = () => window.print();
+  if (sf?.pdf) $in(page, '#spdf').onclick = () => openSlides(sid, 'pdf', sf.name);
+  if (sf && sf.kind !== 'pdf') $in(page, '#sorig').onclick = () => openSlides(sid, 'original', sf.name);
 
   const host = $in(page, '#sedit');
   if (mayFill) {
     const form = c.el(`<form class="stack"><h2>Edit</h2>
       <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label>
-      <label>Slides link <input id="eslides" type="url" placeholder="https://…" pattern="https://.*"></label>
       <button class="primary">Save</button><p id="emsg" class="muted"></p></form>`);
     $in(form, '#esum').value = s.summary || '';
-    $in(form, '#eslides').value = s.slides || '';
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const slidesIn = $in(form, '#eslides').value.trim();
-      if (slidesIn && !safeUrl(slidesIn)) { $in(form, '#emsg').textContent = 'The slides link must start with https://'; return; }
       try {
-        await updateDoc(snap.ref, { summary: $in(form, '#esum').value.trim(), slides: slidesIn });
+        await updateDoc(snap.ref, { summary: $in(form, '#esum').value.trim() });
         renderSession(sid);
       } catch { $in(form, '#emsg').textContent = 'Could not save.'; }
     };
-    host.append(form);
+    host.append(form, slidesForm(snap, sf));
     host.append(discussionForm(c, fields, s.discussion?.answers, async (answers) => {
       await updateDoc(snap.ref, { discussion: { fields: snapshot(fields), answers } });
       renderSession(sid);
@@ -320,10 +350,68 @@ async function renderSession(sid) {
   }
 }
 
+// PDF opens in a new tab; PowerPoint downloads under its own name.
+async function openSlides(sid, which, name) {
+  const w = which === 'pdf' ? window.open('', '_blank') : null; // opened before the await so pop-up blockers allow it
+  const r = await apiFetch(`/api/slides/${sid}/${which}`);
+  if (!r.ok) { w?.close(); alert('Could not open the slides.'); return; }
+  const url = URL.createObjectURL(await r.blob());
+  if (which === 'pdf') { if (w) w.location.href = url; else location.href = url; return; }
+  const a = document.createElement('a');
+  a.href = url; a.download = name || 'slides.pptx';
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// Upload a PDF or PowerPoint, or pull one from a share link; the Worker keeps a copy (and a PDF of PowerPoint).
+function slidesForm(snap, sf) {
+  const sid = snap.id;
+  const form = c.el(`<form class="stack" id="slidesform"><h2>${sf ? 'Replace slides' : 'Add slides'}</h2>
+    <label>Upload slides (PDF or PowerPoint) <input type="file" id="sfile" accept="${SLIDE_TYPES}"></label>
+    <label>Or pull from a link <input id="surl" type="url" placeholder="Google Slides, OneDrive, Dropbox or Drive link"></label>
+    <p class="muted">A link works only if it is shared as "Anyone with the link can view"; the file is copied here. PowerPoint is also saved as a PDF.</p>
+    <button class="primary">${sf ? 'Replace slides' : 'Add slides'}</button>
+    ${sf ? '<button type="button" class="link danger" id="sremove">Remove slides</button>' : ''}
+    <p id="smsg" class="muted" role="status"></p></form>`);
+  const msg = $in(form, '#smsg');
+  const btn = form.querySelector('button.primary');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const file = $in(form, '#sfile').files[0];
+    const link = $in(form, '#surl').value.trim();
+    if (!file && !link) { msg.textContent = 'Choose a file or paste a link.'; return; }
+    if (file && file.size > MAX_SLIDES) { msg.textContent = 'Slides are over 50 MB.'; return; }
+    if (!file && !safeUrl(link)) { msg.textContent = 'The link must start with https://'; return; }
+    btn.disabled = true;
+    msg.textContent = file ? 'Uploading… a PowerPoint takes up to a minute to turn into a PDF.' : 'Pulling the slides from the link…';
+    try {
+      const r = file
+        ? await apiFetch(`/api/slides/${sid}`, { method: 'PUT', body: file, headers: { 'X-File-Name': encodeURIComponent(file.name) } })
+        : await apiFetch(`/api/slides/${sid}`, { method: 'POST', body: JSON.stringify({ url: link }), headers: { 'Content-Type': 'application/json' } });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = out.error || 'Could not save the slides.'; btn.disabled = false; return; }
+      await updateDoc(snap.ref, { slidesFile: { name: out.name, size: out.size, kind: out.kind, pdf: out.pdf }, slides: '' });
+      if (out.warning) alert(out.warning);
+      renderSession(sid);
+    } catch { msg.textContent = 'Could not save the slides.'; btn.disabled = false; }
+  };
+  if (sf) {
+    $in(form, '#sremove').onclick = async () => {
+      if (!confirm('Remove the slides?')) return;
+      const r = await apiFetch(`/api/slides/${sid}`, { method: 'DELETE' }).catch(() => null);
+      if (!r?.ok) { msg.textContent = 'Could not remove the slides.'; return; }
+      await updateDoc(snap.ref, { slidesFile: {} });
+      renderSession(sid);
+    };
+  }
+  return form;
+}
+
 // Admin-only controls on a session: coordinator, start time, Teams link, form override, lock, delete.
 async function adminSessionTools(snap, s, template) {
   const ms = await getDocs(collection(c.db, 'members'));
   const members = ms.docs.map((d) => ({ uid: d.id, name: d.data().name || d.data().email }));
+  const findUid = personIndex(ms.docs.map((d) => ({ uid: d.id, name: d.data().name, email: d.data().email })));
   const box = c.el(`<div class="stack"><form class="stack" id="atools"><h2>Admin</h2>
     <label>Coordinator <input id="acoord" list="amembers" maxlength="120" placeholder="Pick a member or type a name"></label>
     <datalist id="amembers">${members.map((m) => `<option value="${c.esc(m.name)}">`).join('')}</datalist>
@@ -339,7 +427,7 @@ async function adminSessionTools(snap, s, template) {
   $in(box, '#atools').onsubmit = async (e) => {
     e.preventDefault();
     const name = $in(box, '#acoord').value.trim();
-    const hit = members.find((m) => m.name === name);
+    const hit = members.find((m) => m.name === name) || members.find((m) => m.uid === findUid(name));
     const url = $in(box, '#ateams').value.trim();
     if (url && !safeUrl(url)) { $in(box, '#amsg').textContent = 'The Teams link must start with https://'; return; }
     try {
@@ -365,7 +453,7 @@ async function renderPoint(sid) {
   const ref = doc(c.db, 'sessions', sid, 'points', c.user.uid);
   const mine = await getDoc(ref);
   const page = c.el(`<section class="card"><p><a href="#/session/${c.esc(sid)}">← Session</a></p><h1>${c.esc(club.pointPrompt)}</h1>
-    <p class="muted">${c.esc(s.paperTitle)}</p>
+    <p class="muted">${c.esc(decodeEntities(s.paperTitle))}</p>
     ${s.locked ? '<p class="muted">This session is locked.</p>' : `<form class="stack"><label>${c.esc(club.pointPrompt)}
       <textarea id="ptext" rows="4" maxlength="500" required></textarea></label>
       <button class="primary">Save</button><p class="muted" id="pmsg"></p></form>`}</section>`);
