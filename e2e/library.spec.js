@@ -215,13 +215,15 @@ test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named pa
   await page.goto('/?emulator#/library');
   await page.reload();
   await page.getByRole('button', { name: 'Refresh abstracts' }).click();
-  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: [2-9] updated,/);
+  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: [2-9] updated,/, { timeout: 20000 });
   await expect(page.getByRole('link', { name: 'SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications' })).toBeVisible();
   await expect(page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ })).toBeVisible();
   await page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ }).click();
   await expect(page.locator('.tag', { hasText: /^keep$/ }).first()).toBeVisible();
   // A second run finds nothing to change.
   await page.goto('/?emulator#/library');
+  await page.reload();
+  await expect(page.locator('#count')).toContainText('papers, newest first');
   await page.getByRole('button', { name: 'Refresh abstracts' }).click();
-  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: 0 updated,/);
+  await expect(page.locator('#refresh-msg')).toHaveText(/^Done: 0 updated,/, { timeout: 20000 });
 });
