@@ -391,13 +391,13 @@ async function renderSession(sid) {
     <div class="paper-card" id="spaper"><p class="eyebrow">PAPER</p><p><strong>${c.esc(decodeEntities(s.paperTitle))}</strong></p>
       ${pmeta ? `<p class="muted">${c.esc(pmeta)}</p>` : ''}${short ? `<p>${c.esc(short)}</p>` : ''}
       ${s.paperId ? `<p><a class="button" id="openpaper" href="#/paper/${c.esc(s.paperId)}">Open paper</a></p>` : ''}</div>
-    ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
     <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
     <h2>Members' points</h2><ul class="list" id="spts"></ul>
     <div id="sqr"></div>
-    <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span></section>`);
+    <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span>
+    ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}</section>`);
   c.view.replaceChildren(page);
 
   const disc = discussionView(c, fields, s.discussion?.answers);

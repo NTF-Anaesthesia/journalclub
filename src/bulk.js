@@ -413,7 +413,7 @@ export function removeSelected(c, ids, onChange) {
 // ---- Find duplicates (admin): review page with merge ----
 export async function renderDuplicates(c, loadLibrary) {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Duplicates</h1>
-    <p class="muted">Papers with the same DOI or nearly the same title. Merging keeps one paper with everyone's notes and ratings, the PDF, tags, reading lists and journal club sessions of both.</p>
+    <p class="muted">Papers with the same DOI or nearly the same title. Merging keeps one paper with everyone's notes, the PDF, tags, reading lists and journal club sessions of both.</p>
     <p id="dmsg" class="muted" role="status">Looking…</p><div id="dl"></div></section>`);
   c.view.replaceChildren(page);
   if (!isAdmin(c)) { page.querySelector('#dmsg').textContent = 'Admins only.'; return; }
