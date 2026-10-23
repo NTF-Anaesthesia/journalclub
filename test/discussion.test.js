@@ -49,6 +49,14 @@ test('a session saved under an old template keeps its labels in CSV and Markdown
   assert.match(sessionMarkdown(oldSession, newTemplate), /## Old question\nold answer/);
 });
 
+test("an admin's form override for one session wins over the copy its discussion was saved with", () => {
+  const saved = snapshot([{ id: 'q', label: 'Old question', type: 'long' }]);
+  const override = normalizeFields([{ id: 'q', label: 'Would this change our practice? Why?', type: 'long' }]);
+  const s = { discussion: { fields: saved, answers: { q: 'yes' } }, template: override };
+  assert.equal(sessionFields(s, DEFAULT_FIELDS)[0].label, 'Would this change our practice? Why?');
+  assert.match(sessionMarkdown({ ...s, date: ts('2026-10-01'), paperTitle: 'P' }, DEFAULT_FIELDS), /## Would this change our practice\? Why\?\nyes/);
+});
+
 test('an unfilled session uses the current template', () => {
   assert.equal(sessionFields({}, DEFAULT_FIELDS), DEFAULT_FIELDS);
 });

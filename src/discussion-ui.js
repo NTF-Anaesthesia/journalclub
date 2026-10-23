@@ -79,7 +79,7 @@ export function discussionForm(c, fields, answers, onSave) {
     const msg = form.querySelector('#dmsg');
     const missing = missingRequired(fields, out);
     if (missing.length) { msg.textContent = `Please fill in: ${missing.join(', ')}`; return; }
-    try { await onSave(out); } catch { msg.textContent = 'Could not save.'; }
+    try { await onSave(out); msg.textContent = 'Saved.'; } catch { msg.textContent = 'Could not save.'; }
   };
   return form;
 }
