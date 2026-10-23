@@ -156,7 +156,7 @@ const mayPlanSession = (s) => isAdmin() || (!s.locked && [s.createdBy, s.present
 
 // One quick sheet for planning a session: date, paper by search-as-you-type, presenter, coordinator, optional Teams link.
 // Any member may plan; `#/plan/<paper>` opens it with that paper chosen. `#/plan/-/<sid>` is the session's Edit page:
-// the same sheet, then the summary, slides, discussion and (admins) the session settings.
+// the same sheet, then the summary, slides, discussion and (admins) the session settings, all saved by one Save bar.
 async function renderPlan(paperId, sid) {
   const oldSnap = sid ? await getDoc(doc(c.db, 'sessions', sid)) : null;
   if (sid && !oldSnap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/sessions">Sessions</a></p></section>')); return; }
@@ -193,10 +193,12 @@ async function renderPlan(paperId, sid) {
       <label>Coordinator <input id="scoord" list="people" maxlength="120" placeholder="Pick a member or type a name"></label>
       <datalist id="people">${[...people.keys()].map((n) => `<option value="${c.esc(n)}">`).join('')}</datalist>
       <label>Teams link for this session (optional) <input id="steams" type="url" placeholder="https://… (blank = standing link)" pattern="https://.*"></label>
-      <button class="primary">${sid ? 'Save' : 'Plan session'}</button><p id="pfmsg" class="muted"></p></form>
-    ${sid ? `<div id="sedit" class="stack"></div><p><a class="button" href="#/session/${c.esc(sid)}">Done</a></p>` : ''}</section>`);
+      ${sid ? '' : '<button class="primary">Plan session</button><p id="pfmsg" class="muted"></p>'}</form>
+    ${sid ? `<div id="sedit" class="stack"></div>
+      <div class="savebar no-print" id="savebar"><p id="pfmsg" class="muted" role="status"></p>
+        <a href="#/session/${c.esc(sid)}">Done</a><button type="button" class="primary" id="saveall">Save</button></div>` : ''}</section>`);
   c.view.replaceChildren(page);
-  const form = $in(page, '#pf'); const msg = $in(form, '#pfmsg');
+  const form = $in(page, '#pf'); const msg = $in(page, '#pfmsg');
   const find = $in(form, '#spaper'); const pick = $in(form, '#spick');
 
   let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: decodeEntities(old.paperTitle) } : null);
@@ -227,70 +229,130 @@ async function renderPlan(paperId, sid) {
   $in(form, '#scoord').value = old ? old.coordinatorName || '' : '';
   $in(form, '#steams').value = old ? old.teamsUrl || '' : '';
 
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    if (!paper) { msg.textContent = 'Pick a paper from the list.'; return; }
+  // The plan fields, or { error } to show instead of saving.
+  const readPlan = () => {
+    if (!paper) return { error: 'Pick a paper from the list.' };
     const teams = $in(form, '#steams').value.trim();
-    if (teams && !safeUrl(teams)) { msg.textContent = 'The Teams link must start with https://'; return; }
+    if (teams && !safeUrl(teams)) return { error: 'The Teams link must start with https://' };
     const pres = $in(form, '#spres').value.trim(); const coord = $in(form, '#scoord').value.trim();
     const presUid = people.get(pres) || findUid(pres);
     // A presenter not linked to a member can add a point but not the summary, slides or discussion: say so once.
     if (pres && !presUid && warned !== pres) {
       warned = pres;
-      msg.textContent = `${pres} isn't linked to a member account, so they won't be able to edit the summary, slides or discussion. `
-        + 'Pick them from the list (or invite them first), or press Save again to keep the name only.';
-      return;
+      return { error: `${pres} isn't linked to a member account, so they won't be able to edit the summary, slides or discussion. `
+        + 'Pick them from the list (or invite them first), or press Save again to keep the name only.' };
     }
-    const when = Timestamp.fromDate(new Date(`${date.value}T00:00:00`));
-    const plan = {
-      date: when, paperId: paper.id, paperTitle: paper.title,
-      presenterUid: presUid, presenterName: pres, coordinatorUid: people.get(coord) || findUid(coord), coordinatorName: coord,
+    return { data: {
+      date: Timestamp.fromDate(new Date(`${date.value}T00:00:00`)), paperId: paper.id, paperTitle: paper.title,
+      presenterUid: presUid, presenterName: pres, coordinatorUid: people.get(coord) || findUid(coord), coordinatorName: coord, teamsUrl: teams,
+    } };
+  };
+
+  if (!sid) {
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const r = readPlan();
+      if (r.error) { msg.textContent = r.error; return; }
+      const { teamsUrl, ...plan } = r.data;
+      msg.textContent = 'Saving…';
+      try {
+        const b = writeBatch(c.db);
+        const ref = doc(collection(c.db, 'sessions'));
+        b.set(ref, { ...plan, ...(teamsUrl ? { teamsUrl } : {}), summary: '', slides: '', createdBy: c.user.uid, createdAt: serverTimestamp() });
+        await setPresented(b, paper.id, ref.id, plan.date);
+        await b.commit();
+        dirtyLibrary();
+        location.hash = `#/session/${ref.id}`;
+      } catch { msg.textContent = 'Could not save the session.'; }
     };
+    return;
+  }
+
+  // Edit page: each section reports its changes; the Save bar writes the changed sections in one batch.
+  const readers = { plan: readPlan };
+  const dirty = new Set();
+  const track = (name, node) => {
+    const mark = () => { dirty.add(name); msg.textContent = 'Unsaved changes'; };
+    node.addEventListener('input', mark); node.addEventListener('change', mark);
+  };
+  const save = async () => {
+    if (!dirty.size) { msg.textContent = 'No changes to save.'; return true; }
+    const update = {};
+    for (const name of dirty) {
+      const r = readers[name]();
+      if (r.error) { msg.textContent = r.error; return false; }
+      Object.assign(update, r.data);
+    }
     msg.textContent = 'Saving…';
     try {
       const b = writeBatch(c.db);
-      const ref = sid ? doc(c.db, 'sessions', sid) : doc(collection(c.db, 'sessions'));
-      if (sid) b.update(ref, { ...plan, teamsUrl: teams });
-      else b.set(ref, { ...plan, ...(teams ? { teamsUrl: teams } : {}), summary: '', slides: '', createdBy: c.user.uid, createdAt: serverTimestamp() });
-      if (old && old.paperId !== paper.id) await setPresented(b, old.paperId, ref.id, null);
-      await setPresented(b, paper.id, ref.id, when);
+      b.update(oldSnap.ref, update);
+      if (dirty.has('plan')) {
+        if (old.paperId !== update.paperId) await setPresented(b, old.paperId, sid, null);
+        await setPresented(b, update.paperId, sid, update.date);
+      }
       await b.commit();
-      dirtyLibrary();
-      if (!sid) { location.hash = `#/session/${ref.id}`; return; }
-      Object.assign(old, plan, { teamsUrl: teams });
+      if (dirty.has('plan')) dirtyLibrary();
+      Object.assign(old, update);
+      dirty.clear();
       msg.textContent = 'Saved.';
-    } catch { msg.textContent = 'Could not save the session.'; }
+      return true;
+    } catch { msg.textContent = 'Could not save the session.'; return false; }
   };
-  if (sid) await editSections(oldSnap, $in(page, '#sedit'));
+  guardLeaving(() => dirty.size > 0);
+  track('plan', form);
+  form.onsubmit = (e) => { e.preventDefault(); save(); };
+  $in(page, '#saveall').onclick = () => save();
+  // Slides and the session's own discussion form save on their own and redraw the page: keep other edits first.
+  const reload = async () => {
+    if (dirty.size && !(await save()) && !confirm('Your other changes could not be saved. Reload the page and lose them?')) return;
+    renderPlan('', sid);
+  };
+  await editSections(oldSnap, $in(page, '#sedit'), { readers, track, save, reload });
 }
 
-// The rest of the Edit page: summary, slides, discussion, then admin settings and delete. Saves stay on the page.
-async function editSections(snap, host) {
+// The rest of the Edit page: summary, slides, discussion, then admin settings and delete.
+async function editSections(snap, host, { readers, track, save, reload }) {
   const sid = snap.id;
   const s = { id: sid, ...snap.data() };
   const template = await loadTemplate();
   const fields = sessionFields(s, template);
   const sf = s.slidesFile?.kind ? s.slidesFile : null;
-  const reload = () => renderPlan('', sid);
-  const sum = c.el(`<form class="stack" id="sumform"><h2>Summary</h2>
-    <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label>
-    <button class="primary">Save summary</button><p id="emsg" class="muted"></p></form>`);
-  $in(sum, '#esum').value = s.summary || '';
-  sum.onsubmit = async (e) => {
-    e.preventDefault();
-    try { await updateDoc(snap.ref, { summary: $in(sum, '#esum').value.trim() }); $in(sum, '#emsg').textContent = 'Saved.'; }
-    catch { $in(sum, '#emsg').textContent = 'Could not save.'; }
+  const section = (name, node, read) => {
+    readers[name] = read; track(name, node);
+    node.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    return node;
   };
-  host.append(sum, slidesForm(snap, sf, reload));
-  host.append(discussionForm(c, fields, s.discussion?.answers, async (answers) => {
-    await updateDoc(snap.ref, { discussion: { fields: snapshot(fields), answers } });
+  const sum = c.el(`<form class="stack" id="sumform"><h2>Summary</h2>
+    <label>Summary <textarea id="esum" rows="6" maxlength="8000"></textarea></label></form>`);
+  $in(sum, '#esum').value = s.summary || '';
+  host.append(section('summary', sum, () => ({ data: { summary: $in(sum, '#esum').value.trim() } })), slidesForm(snap, sf, reload));
+  const disc = discussionForm(c, fields, s.discussion?.answers);
+  host.append(section('discussion', disc, () => {
+    const { answers, missing } = disc.read();
+    return missing.length ? { error: `Please fill in: ${missing.join(', ')}` } : { data: { discussion: { fields: snapshot(fields), answers } } };
   }));
-  if (isAdmin()) host.append(adminSessionTools(snap, s, template, reload));
+  if (isAdmin()) host.append(adminSessionTools(snap, s, template, reload, section));
   if (isAdmin() || s.createdBy === c.user.uid) {
     const del = c.el('<button class="link danger">Delete session</button>');
     del.onclick = async () => { if (confirm('Delete this session?')) await deleteSession(snap); };
     host.append(del);
   }
+}
+
+// While the Edit page has unsaved changes, ask before leaving it by a link or closing the tab.
+let unsaved = () => false;
+function guardLeaving(check) {
+  if (!guardLeaving.on) {
+    guardLeaving.on = true;
+    window.addEventListener('beforeunload', (e) => { if (unsaved()) e.preventDefault(); });
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest?.('a[href^="#"]');
+      if (a && unsaved() && !confirm('Leave without saving your changes?')) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+    window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/plan/-/')) unsaved = () => false; });
+  }
+  unsaved = check;
 }
 
 async function deleteSession(snap) {
@@ -413,12 +475,12 @@ function slidesForm(snap, sf, done) {
   return form;
 }
 
-// Admin-only settings on a session: start time, lock, and the discussion form for this session only.
-function adminSessionTools(snap, s, template, done) {
+// Admin-only settings on a session: start time and lock (saved by the Save bar), and the discussion form for this
+// session only (saved on its own, since it reshapes the Discussion section).
+function adminSessionTools(snap, s, template, done, section) {
   const box = c.el(`<div class="stack"><form class="stack" id="atools"><h2>Admin</h2>
     <label>Start time <input id="atime" type="time"></label>
-    <label><input id="alock" type="checkbox"> Locked (only admins edit)</label>
-    <button class="primary">Save settings</button><p class="muted" id="amsg"></p></form>
+    <label><input id="alock" type="checkbox"> Locked (only admins edit)</label><p class="muted" id="amsg"></p></form>
     <details ${s.template?.length ? 'open' : ''}><summary>Discussion form for this session only</summary>
       <p class="muted">${s.template?.length ? 'This session has its own form.' : s.discussion?.fields?.length
         ? 'This session keeps the form its discussion was filled with; changes to the default form don\'t reach it.' : 'This session follows the default form.'}</p>
@@ -426,13 +488,7 @@ function adminSessionTools(snap, s, template, done) {
       <div id="aform"></div></details></div>`);
   $in(box, '#atime').value = s.time || '';
   $in(box, '#alock').checked = !!s.locked;
-  $in(box, '#atools').onsubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await updateDoc(snap.ref, { time: $in(box, '#atime').value, locked: $in(box, '#alock').checked });
-      $in(box, '#amsg').textContent = 'Saved.';
-    } catch { $in(box, '#amsg').textContent = 'Could not save.'; }
-  };
+  section('admin', $in(box, '#atools'), () => ({ data: { time: $in(box, '#atime').value, locked: $in(box, '#alock').checked } }));
   $in(box, '#adefault').onclick = async () => {
     try { await updateDoc(snap.ref, { template }); done(); } catch { $in(box, '#amsg').textContent = 'Could not save.'; }
   };
