@@ -14,6 +14,8 @@ const squash = (s) => String(s || '').replace(/[_\s]+/g, ' ').trim();
 // kept as an acronym when it is on the list, holds a digit, or is two letters and not an ordinary short word (IV, CT, GI);
 // in a mixed-case title any word with two or more capitals stays ("ICU", "pH"). Proper names are lowered: fix by hand.
 const ACRONYMS = new Set('ICU ECG EEG EMG CPR ECMO ARDS COPD MRI TIVA TAP CPAP PEEP NIV ICP ASA GCS ENT OSA PONV AKI CKD DVT HIV AIDS MAC SIRS ICD NICE BMI TOF TEG ROTEM ERAS CVC ETT LMA RSI NMDA GABA UK USA WHO'.split(' '));
+// Kept in Title Case titles too ("Paediatric Iv Fluids" -> "IV"). Left out on purpose: TAP, MAC, ENT, ICD, NICE, WHO, ASA, which are ordinary words.
+const MIXED = new Set('IV IM IO CT GI ICU ECG EEG EMG CPR ECMO ARDS COPD MRI TIVA CPAP PEEP NIV ICP GCS OSA PONV AKI CKD DVT HIV AIDS SIRS BMI TOF TEG ERAS CVC ETT LMA RSI NMDA GABA UK USA ROTEM'.split(' '));
 const SHORT = new Set('THE AND FOR OF IN ON TO BY AN A OR AT IS AS BE NOT NO ITS ARE WAS ALL OUT OFF PRE POST VS WITH FROM'.split(' '));
 export function sentenceCase(title) {
   const t = String(title || '');
@@ -24,22 +26,29 @@ export function sentenceCase(title) {
     const keep = caps
       ? ACRONYMS.has(w) || /\d/.test(w) || (w.length === 2 && !SHORT.has(w))
       : (w.match(/[A-Z\u00c0-\u00de]/g) || []).length >= 2 || /^[a-z]+[A-Z]/.test(w) || (upper && w.length > 1) || /\d/.test(w);
-    const out = keep ? w : w.toLowerCase();
+    const out = !caps && /^[A-Z][a-z]+$/.test(w) && MIXED.has(w.toUpperCase()) ? w.toUpperCase() : keep ? w : w.toLowerCase(); // "Iv" in a Title Case title
     const r = first ? out[0].toUpperCase() + out.slice(1) : out;
     first = false;
     return r;
-  });
+  }).replace(/\b[Uu]s(?=[ -]guid)/g, 'US').replace(/\b[Tt]ap(?= blocks?\b)/g, 'TAP'); // "US-guided", "TAP block"
 }
 
 // The title without its "ATOTW <n>" start, underscores as spaces; '' when nothing is left.
 export const strippedTitle = (title) => squash(String(title || '').replace(PREFIX, ''));
+
+// The span is only trusted when it reads like the stored title: plain ASCII, no slash, balanced brackets, and no hyphen of
+// the stored title lost ("Ultrasound-guided" for "Ultrasound Guided" is fine; "fistula/ atresia" or a dash mangled by an OCR is not).
+const sane = (span, plain) => /^[\x20-\x7e]+$/.test(span) && !span.includes('/')
+  && (span.match(/\(/g) || []).length === (span.match(/\)/g) || []).length
+  && (span.match(/-/g) || []).length >= (plain.match(/-/g) || []).length;
 
 // The same words as `plain`, in the page's own spelling and capitals, when page 1 prints them in a row; else null.
 export function pageSpan(plain, page) {
   const w = words(plain);
   if (w.length < 2) return null;
   const re = new RegExp(w.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^A-Za-z0-9]+'), 'i');
-  return re.exec(String(page || '').replace(/\s+/g, ' '))?.[0].trim() || null;
+  const span = re.exec(String(page || '').replace(/\s+/g, ' '))?.[0].trim();
+  return span && sane(span, plain) ? span : null;
 }
 
 // The year printed on a tutorial's first page ("20 May 2025", "May 2025"); only when the page names the series.

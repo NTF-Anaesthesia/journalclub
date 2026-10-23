@@ -1,12 +1,14 @@
 // Tidy ATOTW without the app: the same rules as the Library's "Tidy ATOTW" sheet (src/atotw-plan.js), run over every
 // ATOTW paper by an admin from a computer that is signed in to Google Cloud (gcloud) and Cloudflare (wrangler).
 //   node scripts/tidy-atotw.mjs --project journalclub-anantf [--apply] [--out DIR] [--limit N]
+//   node scripts/tidy-atotw.mjs --project P --repair OLD/before.json [--apply --out DIR]   (redo only titles/years of papers a first run wrote, with
+//   the current rules, from the original titles in that before.json; a paper edited since that run is skipped)
 //   tests: --emulator 127.0.0.1:8080 --pages pages.json   (pages.json: { "<paper id>": "<page 1 text>" })
 // Without --apply it only reports. With --apply it first saves the old values of every paper it will change to
 // DIR/before.json (put them back with --restore DIR/before.json), then writes one paper at a time; a paper edited since
 // it was read is skipped. Fields in `manual` are never touched; papers sharing a number are skipped.
 import { execFileSync, execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { tidyPlan, tidyWrite, crossrefYear } from '../src/atotw-plan.js';
 
 const args = process.argv.slice(2);
@@ -94,17 +96,28 @@ async function restore(file) {
 
 async function main() {
   if (opt('restore')) return restore(opt('restore'));
-  const papers = (await listPapers()).filter(({ p }) => p.atotw || /^\s*atotw\b/i.test(p.title)).slice(0, limit);
+  const repair = opt('repair') ? JSON.parse(readFileSync(opt('repair'), 'utf8')) : null;
+  const ranAt = repair ? statSync(opt('repair')).mtimeMs : 0;
+  const papers = (await listPapers()).filter(({ id, p }) => repair ? id in repair : p.atotw || /^\s*atotw\b/i.test(p.title)).slice(0, limit);
   const pages = page1(papers.filter(({ p }) => p.file).map(({ id }) => id));
   const plans = new Map();
-  for (const { id, p } of papers) {
+  for (const { id, updateTime, p } of papers) {
+    if (repair) { // from the original title, with the rules as they are now; only title and year, and only if untouched since the first run
+      const o = repair[id], untouched = Date.parse(updateTime) <= ranAt + 60 * 60e3;
+      const pl = tidyPlan({ ...p, title: o.title, manual: o.manual || [] }, pages[id] || '');
+      const next = {};
+      if (pl?.next.title && pl.next.title !== p.title) next.title = pl.next.title;
+      if (pl?.next.year && pl.next.year !== p.year && !p.manual.includes('year')) next.year = pl.next.year;
+      plans.set(id, { n: p.atotw, next: untouched ? next : {}, status: !untouched ? 'unsure' : Object.keys(next).length ? 'change' : 'same', note: untouched ? '' : 'edited since the first run' });
+      continue;
+    }
     let plan = tidyPlan(p, pages[id] || '');
     if (plan && !plan.next.year && !p.year && plan.n >= 525 && !p.manual.includes('year')) plan = tidyPlan(p, pages[id] || '', await lookupYear(plan.n));
     if (plan) plans.set(id, plan);
   }
   const count = new Map();
   for (const pl of plans.values()) count.set(pl.n, (count.get(pl.n) || 0) + 1);
-  for (const pl of plans.values()) if (count.get(pl.n) > 1) Object.assign(pl, { status: 'unsure', next: {}, note: 'same number as another paper' });
+  for (const pl of plans.values()) if (!repair && count.get(pl.n) > 1) Object.assign(pl, { status: 'unsure', next: {}, note: 'same number as another paper' });
   const tally = { change: 0, same: 0, unsure: 0, noYear: 0 };
   for (const [id, pl] of plans) {
     tally[pl.status]++;
@@ -112,8 +125,8 @@ async function main() {
     if (!pl.next.year && !p.year) tally.noYear++;
   }
   const changed = papers.filter(({ id }) => plans.get(id)?.status === 'change');
-  const sample = changed.slice(0, 8).map(({ id, p }) => ({ id, from: p.title, ...plans.get(id).next }));
-  console.log(JSON.stringify({ atotwPapers: papers.length, ...tally, apply: flag('apply'), sample }, null, 1));
+  const sample = changed.slice(0, repair ? 25 : 8).map(({ id, p }) => ({ id, from: p.title, ...plans.get(id).next }));
+  console.log(JSON.stringify({ atotwPapers: papers.length, ...tally, repair: !!repair, apply: flag('apply'), sample }, null, 1));
   if (!flag('apply')) return;
   mkdirSync(out, { recursive: true });
   const before = Object.fromEntries(changed.map(({ id, p }) => [id, { title: p.title, journal: p.journal, year: p.year, atotw: p.atotw, manual: p.manual }]));

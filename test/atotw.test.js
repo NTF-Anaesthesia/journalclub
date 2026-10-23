@@ -89,3 +89,19 @@ test('year: a loose year on a file-named paper, a lookup when page 1 has none, n
   assert.equal(tidyPlan(p, 'no date here', 2025).next.year, 2025);
   assert.equal(tidyPlan({ ...p, manual: ['year'] }, 'x', 2025).next.year, undefined);
 });
+
+test('sentence case keeps IV, US-guided and TAP block in Title Case titles; leaves lower-case input alone', () => {
+  assert.equal(sentenceCase('Paediatric Iv Fluids'), 'Paediatric IV fluids');
+  assert.equal(sentenceCase('Us Guided Local Anaesthetic Forearm Blocks'), 'US guided local anaesthetic forearm blocks');
+  assert.equal(sentenceCase('Tap Block For Surgery'), 'TAP block for surgery');
+  assert.equal(sentenceCase('sedation in icu'), 'Sedation in icu');
+});
+
+test('a page span with unbalanced brackets, a slash, a non-ASCII dash or a lost hyphen is not trusted', () => {
+  assert.equal(pageSpan('The Pulmonary Artery Catheter PAC', 'The Pulmonary Artery Catheter (PAC'), null);
+  assert.equal(pageSpan('fistula oesophageal atresia', 'fistula/ oesophageal atresia'), null);
+  assert.equal(pageSpan('Airway masterclass 3 The larynx', 'Airway masterclass 3 \u2014 The larynx'), null);
+  assert.equal(pageSpan('Peri-operative management', 'Peri operative management'), null);
+  assert.equal(pageSpan('Ultrasound Guided Caudal', 'Ultrasound-guided Caudal'), 'Ultrasound-guided Caudal');
+  assert.equal(tidyPlan({ title: 'ATOTW 7 The Pulmonary Artery Catheter (PAC)' }, 'The Pulmonary Artery Catheter (PAC').next.title, 'The pulmonary artery catheter (PAC)');
+});
