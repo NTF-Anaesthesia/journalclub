@@ -1,9 +1,9 @@
 // Library list: filter chips, sort orders and counts over the cached catalogue (no Firestore reads).
-// `x` carries what is not on the paper itself: { starred: Set, indexed: Set | null, ratings: Map, recent: [ids] }.
+// `x` carries what is not on the paper itself: { starred: Set, indexed: Set | null, recent: [ids] }.
 
 export const SORTS = [
   ['discussed', 'Recently discussed'], ['newest', 'Newest added'], ['year', 'Year'], ['title', 'Title'], ['author', 'First author'],
-  ['rating', 'Average rating'], ['recent', 'Recently opened'],
+  ['recent', 'Recently opened'],
 ];
 export const sortLabel = (k) => (SORTS.find(([s]) => s === k) || SORTS[0])[1];
 
@@ -67,26 +67,11 @@ export function sortEntries(entries, sort, x = {}) {
   if (sort === 'author') {
     return e.sort((a, b) => last(surname(a[1]), surname(b[1]), () => surname(a[1]).localeCompare(surname(b[1]), 'en', { sensitivity: 'base' })) || byNewest(a, b));
   }
-  if (sort === 'rating') {
-    const r = x.ratings || new Map();
-    return e.sort((a, b) => last(r.get(a[0]), r.get(b[0]), () => r.get(b[0]) - r.get(a[0])) || byNewest(a, b));
-  }
   if (sort === 'recent') {
     const at = new Map((x.recent || []).map((id, i) => [id, i]));
     return e.sort((a, b) => last(at.get(a[0]), at.get(b[0]), () => at.get(a[0]) - at.get(b[0])) || byNewest(a, b));
   }
   return e.sort(byNewest);
-}
-
-// Average rating per paper from note docs ({ paperId, rating }); unrated notes don't count.
-export function averageRatings(notes) {
-  const sum = new Map();
-  for (const { paperId, rating } of notes) {
-    if (!(rating > 0)) continue;
-    const s = sum.get(paperId) || [0, 0];
-    sum.set(paperId, [s[0] + rating, s[1] + 1]);
-  }
-  return new Map([...sum].map(([id, [t, n]]) => [id, t / n]));
 }
 
 // "Select all": with no filter or search, the rows already on screen; otherwise every match, capped.

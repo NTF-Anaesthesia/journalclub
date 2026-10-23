@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CHIPS, matches, chipCounts, tagCounts, sortEntries, discussedAt, averageRatings, selectAll, triState, emptyFilter, filterOn } from '../src/filters.js';
+import { CHIPS, matches, chipCounts, tagCounts, sortEntries, discussedAt, selectAll, triState, emptyFilter, filterOn } from '../src/filters.js';
 import { vancouver, vancouverList, bibtex } from '../src/cite.js';
 import { findDuplicates, pickKeep, keepAllowed, mergePaper, mergeNotes, similarity, normTitle } from '../src/dupes.js';
 
@@ -10,7 +10,7 @@ const lib = [
   ['b', { title: 'Blocks in obstetrics', authors: ['Zoe Adams'], year: 2024, doi: '', abstract: '', tags: [], addedAt: ts(3), presented: [{ sid: 's1' }] }],
   ['c', { title: 'Carbon cost of anaesthesia', authors: [], year: null, doi: '10.1/c', abstract: 'y', tags: ['airway', 'green'], file: { pages: 1 }, addedAt: ts(2) }],
 ];
-const x = { starred: new Set(['b']), indexed: new Set(['a']), ratings: new Map([['c', 4.5], ['a', 3]]), recent: ['c', 'b'] };
+const x = { starred: new Set(['b']), indexed: new Set(['a']), recent: ['c', 'b'] };
 const ids = (e) => e.map(([id]) => id);
 
 test('chips filter and count over the whole catalogue', () => {
@@ -45,9 +45,7 @@ test('sort orders; missing values last', () => {
   assert.deepEqual(ids(sortEntries(lib, 'year')), ['b', 'a', 'c']);
   assert.deepEqual(ids(sortEntries(lib, 'title')), ['a', 'b', 'c'], '"The" is ignored');
   assert.deepEqual(ids(sortEntries(lib, 'author')), ['b', 'a', 'c']);
-  assert.deepEqual(ids(sortEntries(lib, 'rating', x)), ['c', 'a', 'b']);
   assert.deepEqual(ids(sortEntries(lib, 'recent', x)), ['c', 'b', 'a']);
-  assert.deepEqual([...averageRatings([{ paperId: 'a', rating: 4 }, { paperId: 'a', rating: 2 }, { paperId: 'b', rating: 0 }])], [['a', 3]]);
 });
 
 test('select all: loaded rows unless narrowed, then every match up to 200; tri-state', () => {

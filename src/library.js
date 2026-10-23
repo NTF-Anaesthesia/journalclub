@@ -1,7 +1,7 @@
 // Library pages: search and browse (sort, filter chips, select mode), add by DOI or PubMed ID, bulk PDF import,
-// paper page (notes, ratings, PDF, star, lists). Saved and list pages: src/saved.js; bulk actions: src/bulk.js.
+// paper page (notes, PDF, star, lists). Saved and list pages: src/saved.js; bulk actions: src/bulk.js.
 import {
-  doc, getDoc, getDocs, collection, collectionGroup, setDoc, addDoc, deleteDoc, updateDoc,
+  doc, getDoc, getDocs, collection, setDoc, addDoc, deleteDoc, updateDoc,
   query, where, orderBy, limit, serverTimestamp,
 } from 'firebase/firestore';
 import { searchPapers, mergeHits } from './search.js';
@@ -10,7 +10,7 @@ import { abstractSections, cleanPaper } from './abstract.js';
 import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
-import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
+import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
@@ -114,7 +114,7 @@ async function renderSearch() {
   const q = $in(page, '#q'), res = $in(page, '#res'), count = $in(page, '#count'), end = $in(page, '#end');
   q.value = ui.q;
   const tabbar = document.getElementById('tabbar');
-  const x = { starred: new Set(), indexed: null, ratings: null, recent: [] };
+  const x = { starred: new Set(), indexed: null, recent: [] };
 
   // First paint: the newest 50 saved on this device, else (first open here) a small query, while the catalogue loads.
   if (!current() || current().stale) {
@@ -272,13 +272,9 @@ async function renderSearch() {
     const d = sheet(c, 'Sort', `<h2 class="sheet-title">Sort by</h2><ul class="list">${SORTS.map(([k, l]) => `<li><label class="check-row">
       <input type="radio" name="sort" value="${k}"${k === ui.sort ? ' checked' : ''}><span class="grow">${l}</span></label></li>`).join('')}</ul>
       <ul class="list"><li><label class="check-row"><input type="checkbox" id="sauth"${showAuthors() ? ' checked' : ''}><span class="grow">Show authors</span></label></li></ul>`);
-    d.querySelectorAll('input[name=sort]').forEach((r) => { r.onchange = async () => {
+    d.querySelectorAll('input[name=sort]').forEach((r) => { r.onchange = () => {
       ui.sort = r.value;
       try { localStorage.setItem(SORT_KEY, ui.sort); } catch { /* private */ }
-      if (ui.sort === 'rating' && !x.ratings) {
-        const ns = await getDocs(collectionGroup(c.db, 'notes')).catch(() => null);
-        x.ratings = averageRatings((ns?.docs || []).map((n) => ({ paperId: n.ref.parent.parent.id, rating: n.data().rating })));
-      }
       d.close(); ui.q = ''; q.value = ''; show();
     }; });
     d.querySelector('#sauth').onchange = (e) => { try { localStorage.setItem(AUTHORS_KEY, e.target.checked ? '1' : '0'); } catch { /* private */ } redrawRows(); };
@@ -532,8 +528,6 @@ async function renderPaper(id, hitPage) {
   touchRecent(c.db, c.user.uid, id);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
   const mine = notes.find((n) => n.uid === c.user.uid);
-  const rated = notes.filter((n) => n.rating > 0);
-  const avg = rated.length ? (rated.reduce((s, n) => s + n.rating, 0) / rated.length).toFixed(1) : null;
   document.title = `${p.title} · Paper · Journal club`;
   const links = [
     p.doi && `<a href="https://doi.org/${c.esc(p.doi)}" target="_blank" rel="noopener">Publisher page</a>`,
@@ -552,13 +546,12 @@ async function renderPaper(id, hitPage) {
     ${links ? `<p class="links">${links}</p>` : ''}
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
     ${(p.manual || []).length ? `<p class="muted" id="handnote">Edited by hand (${c.esc(p.manual.join(', '))}). <button type="button" class="link" id="unhand">Let Refresh update these again</button></p>` : ''}
-    <h2>PDF</h2><div id="file"></div>
-    <h2>Notes and ratings ${avg ? `<span class="muted">· ${avg}/5 from ${rated.length}</span>` : ''}</h2>
+    <h2>Full Text PDF</h2><div id="file"></div>
+    <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
+    <h2>Notes</h2>
     <form id="nf" class="stack"><label>Your note <textarea id="note" rows="3" maxlength="4000"></textarea></label>
-      <label>Your rating <select id="rating"><option value="0">No rating</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}">${n} / 5</option>`).join('')}</select></label>
       <button class="primary">Save note</button></form>
     <ul id="notes" class="list"></ul>
-    <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
 
@@ -595,14 +588,13 @@ async function renderPaper(id, hitPage) {
   }
 
   // Notes.
-  if (mine) { $in(page, '#note').value = mine.text; $in(page, '#rating').value = String(mine.rating || 0); }
+  if (mine) $in(page, '#note').value = mine.text;
   const nl = $in(page, '#notes');
-  notes.filter((n) => n.text || n.rating).forEach((n) => nl.append(c.el(`<li><span><strong>${c.esc(n.name || 'Member')}</strong>
-    ${n.rating ? `<span class="muted">${n.rating}/5</span>` : ''}<br>${c.esc(n.text)}</span></li>`)));
+  notes.filter((n) => n.text).forEach((n) => nl.append(c.el(`<li><span><strong>${c.esc(n.name || 'Member')}</strong><br>${c.esc(n.text)}</span></li>`)));
   $in(page, '#nf').onsubmit = async (e) => {
     e.preventDefault();
     await setDoc(doc(c.db, 'papers', id, 'notes', c.user.uid), {
-      text: $in(page, '#note').value.trim(), rating: Number($in(page, '#rating').value),
+      text: $in(page, '#note').value.trim(), rating: 0, // ratings are retired; the rules still expect the field
       name: c.member.name || c.user.displayName || c.user.email, updatedAt: serverTimestamp(),
     });
     apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // notes are searched server-side
@@ -688,7 +680,7 @@ async function renderRemove(id) {
     <p><strong>${c.esc(p.title)}</strong></p>
     ${p.file ? '<h2>Remove the PDF only</h2><p class="muted">The paper stays in the library; the stored file and its search text go.</p><button id="rpdf" class="danger-btn">Remove PDF</button>' : ''}
     <h2>Remove the whole paper</h2>
-    <p class="muted">This also removes its PDF. Notes, ratings and votes on it are no longer reachable. Type the title to confirm.</p>
+    <p class="muted">This also removes its PDF. Notes and votes on it are no longer reachable. Type the title to confirm.</p>
     <form id="rf" class="stack"><label>Title <input id="rtitle" autocomplete="off" aria-label="Type the paper title"></label>
       <button id="rpaper" class="danger-btn" disabled>Remove paper</button></form><p id="rmsg" class="muted"></p></section>`);
   c.view.replaceChildren(page);

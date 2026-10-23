@@ -67,11 +67,10 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
   expect(files.size).toBe(1);
 
-  // A note and rating.
+  // A note.
   await page.getByLabel('Your note').fill('Bayesian framing of positive predictive value');
-  await page.getByLabel('Your rating').selectOption('4');
   await page.getByRole('button', { name: 'Save note' }).click();
-  await expect(page.getByText('4.0/5 from 1')).toBeVisible();
+  await expect(page.locator('#notes').getByText('Bayesian framing of positive predictive value')).toBeVisible();
 
   // Search: PDF text (with a typo), tags and notes.
   await page.getByRole('link', { name: 'Library', exact: true }).click();

@@ -143,7 +143,9 @@ body.selecting .snack { bottom:calc(84px + var(--app-safe-b)); }
 .session-head { background:var(--app-inset); border-radius:var(--app-r-md, 12px); padding:var(--app-s3, 14px); margin:var(--app-s2) 0; }
 .session-head h1 { margin:0 0 var(--app-s1); }
 .session-head p { margin:2px 0; }
-.paper-card { border:1px solid var(--app-inset); border-radius:var(--app-r-md, 12px); padding:var(--app-s3, 14px); margin:var(--app-s2) 0; }
+.paper-card { background:var(--app-ivory, #fffaf0); border:1px solid var(--app-line, #d7d2c8); border-left:4px solid var(--app-wine);
+  border-radius:var(--app-r-md, 12px); padding:var(--app-s4, 16px); margin:var(--app-s4) 0;
+  box-shadow:0 1px 2px rgb(39 39 34 / .06), 0 4px 14px rgb(39 39 34 / .07); }
 .paper-card p { margin:4px 0; }
 .paperpage h1 { margin:var(--app-s1) 0; font-size:1.25rem; line-height:1.25; }
 .paperpage .meta, .paperpage .tagrow { margin:2px 0; }
