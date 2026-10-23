@@ -84,7 +84,9 @@ async function backfill(member, env, body, fetchFn) {
 async function searchApi(request, url, env, member, fetchFn) {
   if (!env.SEARCH) return json({ error: 'Search is not set up yet' }, 503);
   if (url.pathname === '/api/search' && request.method === 'GET') {
-    return json({ hits: await search(env.SEARCH, (url.searchParams.get('q') || '').slice(0, 200)) });
+    try {
+      return json({ hits: await search(env.SEARCH, (url.searchParams.get('q') || '').slice(0, 200)) });
+    } catch { return json({ error: 'PDF search unavailable right now' }, 503); }
   }
   if (url.pathname === '/api/indexed' && request.method === 'GET') return json({ ids: await indexedPapers(env.SEARCH) });
   if (url.pathname === '/api/backfill' && request.method === 'POST') {
