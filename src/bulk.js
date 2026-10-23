@@ -65,10 +65,10 @@ export async function addToSheet(c, ids, onChange) {
   const n = ids.length;
   const d = sheet(c, `Add ${plural(n, 'paper')} to`, `<div class="sheet-head"><button type="button" class="link" id="cx">Cancel</button>
       <strong>Add ${plural(n, 'paper')} to…</strong><button type="button" class="link" id="sv">Save</button></div>
-    <input id="af" type="search" autocomplete="off" aria-label="Find or create a list or tag" placeholder="Find or create a list or tag">
+    <input id="af" type="search" autocomplete="off" aria-label="Find or create a list or tag" placeholder="Find or create a private list or shared tag">
     <div id="mk"></div>
-    <h3 class="sheet-h">Reading lists</h3><ul id="al" class="list"></ul>
-    <h3 class="sheet-h">Tags</h3><div id="at" class="chips wrap"></div>
+    <h3 class="sheet-h">Private lists <span class="muted">· only you see them</span></h3><ul id="al" class="list"></ul>
+    <h3 class="sheet-h">Shared tags <span class="muted">· every member sees them</span></h3><div id="at" class="chips wrap"></div>
     <p class="muted">Tap once to add to all ${n}, again to remove from all ${n}. A dashed tag or a part-filled box is on some of them; Save leaves it as is unless you tap it.</p>`);
   const find = d.querySelector('#af');
   const note = (r) => (r.now === 'all' ? `all ${n}` : r.now === 'some' ? `${ids.filter((id) => r.kind === 'list' ? r.list.paperIds.includes(id) : (paper(id).tags || []).includes(r.name)).length} of ${n}` : '');
@@ -79,12 +79,11 @@ export async function addToSheet(c, ids, onChange) {
     for (const [key, r] of rows) {
       if (q && !r.name.toLowerCase().includes(q)) continue;
       if (r.kind === 'list') {
-        const kind = r.list.starred || !r.list.shared ? 'private' : 'shared';
         const li = c.el(`<li><label class="check-row"><input type="checkbox"><span class="grow"></span><span class="muted"></span></label></li>`);
         const box = li.querySelector('input');
         box.checked = r.now === 'all'; box.indeterminate = r.now === 'some';
         li.querySelector('.grow').textContent = r.name;
-        li.querySelector('.muted').textContent = [kind, note(r)].filter(Boolean).join(' · ');
+        li.querySelector('.muted').textContent = note(r);
         box.onchange = () => { r.now = box.checked ? 'all' : 'none'; draw(); };
         al.append(li);
       } else {
@@ -97,13 +96,12 @@ export async function addToSheet(c, ids, onChange) {
     if (q) {
       const name = find.value.trim();
       if (![...rows.values()].some((r) => r.kind === 'list' && r.name.toLowerCase() === q)) {
-        const p = c.el(`<p class="mk-row"><button type="button" class="link" id="nl"></button><label class="check-row small"><input type="checkbox" id="np"> Only me</label></p>`);
-        p.querySelector('#nl').textContent = `+ New list “${name}”`;
+        const p = c.el('<p class="mk-row"><button type="button" class="link" id="nl"></button></p>');
+        p.querySelector('#nl').textContent = `+ New private list “${name}”`;
         p.querySelector('#nl').onclick = async () => {
-          const priv = p.querySelector('#np').checked;
           const ref = await addDoc(collection(c.db, 'lists'), { name: name.slice(0, 80), about: '', paperIds: [], createdBy: uid,
-            createdAt: serverTimestamp(), visibility: priv ? 'private' : 'shared' });
-          rows.set('l:' + ref.id, { kind: 'list', name, list: { id: ref.id, name, paperIds: [], mine: true, shared: !priv }, init: 'none', now: 'all' });
+            createdAt: serverTimestamp(), visibility: 'private' });
+          rows.set('l:' + ref.id, { kind: 'list', name, list: { id: ref.id, name, paperIds: [], mine: true }, init: 'none', now: 'all' });
           find.value = ''; draw();
         };
         mk.append(p);
@@ -111,7 +109,7 @@ export async function addToSheet(c, ids, onChange) {
       const tag = q.replace(/,/g, ' ').trim();
       if (tag && !rows.has('t:' + tag)) {
         const b = c.el('<p class="mk-row"><button type="button" class="link"></button></p>');
-        b.firstChild.textContent = `+ New tag “${tag}”`;
+        b.firstChild.textContent = `+ New shared tag “${tag}”`;
         b.firstChild.onclick = () => { rows.set('t:' + tag, { kind: 'tag', name: tag, init: 'none', now: 'all' }); find.value = ''; draw(); };
         mk.append(b);
       }

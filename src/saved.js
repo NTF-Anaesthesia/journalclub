@@ -1,4 +1,5 @@
-// Saved tab (#/lists): Starred, Recently opened, My lists, Shared lists; and one list's page (#/list/<id>).
+// Saved tab (#/lists): Starred, Recently opened, Private lists; and one list's page (#/list/<id>). Lists are only ever
+// the maker's; papers for everyone are grouped with shared tags.
 import { doc, getDoc, addDoc, deleteDoc, updateDoc, collection, serverTimestamp, arrayRemove } from 'firebase/firestore';
 import { loadLists, loadRecent, loadStarred, setStarred, starId } from './prefs.js';
 
@@ -8,18 +9,17 @@ export async function renderSaved(c, loadLibrary, paperItem) {
   const page = c.el(`<section class="card"><h1>Saved</h1>
     <ul class="list nav-list" id="sstar"></ul>
     <h2>Recently opened</h2><ul class="list" id="srecent"><li class="muted">Loading…</li></ul>
-    <h2>My lists</h2><ul class="list nav-list" id="smine"></ul>
-    <h2>Shared lists</h2><ul class="list nav-list" id="sshared"></ul>
-    <h2>New list</h2><form id="nl" class="stack"><label>Name <input id="lname" required maxlength="80" placeholder="e.g. Obstetric posting"></label>
+    <h2>Private lists</h2><p class="muted">Only you see your lists. To group papers for everyone, give them a shared tag.</p>
+    <ul class="list nav-list" id="smine"></ul>
+    <h2>New private list</h2><form id="nl" class="stack"><label>Name <input id="lname" required maxlength="80" placeholder="e.g. Exam revision"></label>
       <label>About <input id="labout" maxlength="200"></label>
-      <label>Who sees it <select id="lvis"><option value="shared">Shared: every member sees it and can add papers</option><option value="private">Only me</option></select></label>
       <button class="primary">Create list</button></form></section>`);
   c.view.replaceChildren(page);
   page.querySelector('#nl').onsubmit = async (e) => {
     e.preventDefault();
     const ref = await addDoc(collection(c.db, 'lists'), {
       name: page.querySelector('#lname').value.trim(), about: page.querySelector('#labout').value.trim(), paperIds: [],
-      createdBy: c.user.uid, createdAt: serverTimestamp(), visibility: page.querySelector('#lvis').value,
+      createdBy: c.user.uid, createdAt: serverTimestamp(), visibility: 'private',
     });
     location.hash = `#/list/${ref.id}`;
   };
@@ -32,10 +32,9 @@ export async function renderSaved(c, loadLibrary, paperItem) {
   const seen = recent.filter((id) => lib.papers.has(id));
   if (!seen.length) rl.append(c.el('<li class="muted">Papers you open show here.</li>'));
   seen.forEach((id) => rl.append(paperItem(id, lib.papers.get(id))));
-  const row = (l) => c.el(`<li><a href="#/list/${c.esc(l.id)}">${c.esc(l.name)} <span class="muted">&nbsp;· ${plural(l.paperIds.filter((id) => lib.papers.has(id)).length, 'paper')}${l.mine && l.shared ? ' · shared' : ''}</span></a></li>`);
-  const mine = lists.filter((l) => l.mine && !l.starred), shared = lists.filter((l) => !l.mine && l.shared);
+  const row = (l) => c.el(`<li><a href="#/list/${c.esc(l.id)}">${c.esc(l.name)} <span class="muted">&nbsp;· ${plural(l.paperIds.filter((id) => lib.papers.has(id)).length, 'paper')}</span></a></li>`);
+  const mine = lists.filter((l) => !l.starred);
   page.querySelector('#smine').append(...(mine.length ? mine.map(row) : [c.el('<li class="muted">None yet.</li>')]));
-  page.querySelector('#sshared').append(...(shared.length ? shared.map(row) : [c.el('<li class="muted">None yet.</li>')]));
 }
 
 export async function renderList(c, lid, loadLibrary, paperItem) {
@@ -49,11 +48,10 @@ export async function renderList(c, lid, loadLibrary, paperItem) {
   const mayRemove = owner || shared;
   const page = c.el(`<section class="card"><p><a href="#/lists">← Saved</a></p><h1>${c.esc(l.name)}</h1>
     ${l.about ? `<p>${c.esc(l.about)}</p>` : ''}
-    <p class="muted">${star ? 'Only you see your starred papers.' : shared ? 'Shared: every member sees this list and can add or remove papers.' : 'Only you see this list.'}</p>
+    <p class="muted">${star ? 'Only you see your starred papers.' : shared ? 'An older shared list: an admin opening Saved turns it into a shared tag.' : 'Private list: only you see it.'}</p>
     <ul id="lp" class="list"></ul>
     ${owner && !star ? `<details><summary>Edit list</summary><form id="el" class="stack">
       <label>Name <input id="ename" required maxlength="80"></label><label>About <input id="eabout" maxlength="200"></label>
-      ${l.createdBy === uid ? '<label>Who sees it <select id="evis"><option value="shared">Shared</option><option value="private">Only me</option></select></label>' : ''}
       <button class="primary">Save</button></form><button id="dl" class="danger-btn">Delete list</button></details>` : ''}</section>`);
   c.view.replaceChildren(page);
   const lib = await loadLibrary();
@@ -76,11 +74,9 @@ export async function renderList(c, lid, loadLibrary, paperItem) {
   const ef = page.querySelector('#el');
   if (ef) {
     ef.querySelector('#ename').value = l.name; ef.querySelector('#eabout').value = l.about || '';
-    if (ef.querySelector('#evis')) ef.querySelector('#evis').value = shared ? 'shared' : 'private';
     ef.onsubmit = async (e) => {
       e.preventDefault();
-      await updateDoc(snap.ref, { name: ef.querySelector('#ename').value.trim(), about: ef.querySelector('#eabout').value.trim(),
-        ...(ef.querySelector('#evis') ? { visibility: ef.querySelector('#evis').value } : {}) });
+      await updateDoc(snap.ref, { name: ef.querySelector('#ename').value.trim(), about: ef.querySelector('#eabout').value.trim() });
       renderList(c, lid, loadLibrary, paperItem);
     };
     page.querySelector('#dl').onclick = async () => {

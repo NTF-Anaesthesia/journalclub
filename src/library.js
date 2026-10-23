@@ -257,14 +257,14 @@ async function renderSearch() {
       if (k === 'notIndexed' && (!x.indexed || (!n[k] && !f.chips.has(k)))) continue;
       out.push(chip(`${label} · ${n[k]}`, f.chips.has(k), () => { if (f.chips.has(k)) f.chips.delete(k); else f.chips.add(k); redraw(); }));
     }
-    out.push(chip(f.tag ? `Tag: ${f.tag}` : 'Tag ▾', !!f.tag, () => (f.tag ? (f.tag = null, redraw()) : tagSheet()), ' aria-haspopup="dialog"'));
+    out.push(chip(f.tag ? `Shared tag: ${f.tag}` : 'Shared tag ▾', !!f.tag, () => (f.tag ? (f.tag = null, redraw()) : tagSheet()), ' aria-haspopup="dialog"'));
     const yr = f.yearFrom != null || f.yearTo != null;
     out.push(chip(yr ? `${f.yearFrom ?? '…'}–${f.yearTo ?? '…'}` : 'Year ▾', yr, () => (yr ? (f.yearFrom = f.yearTo = null, redraw()) : yearSheet()), ' aria-haspopup="dialog"'));
     chipsEl.replaceChildren(...out);
   }
   function tagSheet() {
     const tags = tagCounts([...papers]);
-    const d = sheet(c, 'Filter by tag', `<h2 class="sheet-title">Tag</h2><div class="chips wrap" id="tl"></div>`);
+    const d = sheet(c, 'Filter by shared tag', `<h2 class="sheet-title">Shared tags</h2><div class="chips wrap" id="tl"></div>`);
     const tl = d.querySelector('#tl');
     if (!tags.length) tl.append(c.el('<p class="muted">No tags yet.</p>'));
     tags.forEach(([t, k]) => tl.append(chip(`${t} · ${k}`, false, () => { ui.filter.tag = t; d.close(); redraw(); })));
@@ -431,7 +431,7 @@ async function renderAdd() {
     const prev = c.el(`<div><h2>${c.esc(p.title)}</h2>
       <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
       <form id="af" class="stack">
-        <label>Tags, comma separated <input id="tags" placeholder="airway, obstetric, exam"></label>
+        <label>Shared tags, comma separated <input id="tags" placeholder="airway, obstetric, exam"></label>
         <label>Why read it (one line) <input id="why" maxlength="200"></label>
         <button class="primary">Save to library</button></form></div>`);
     $in(page, '#prev').replaceChildren(prev);
@@ -475,7 +475,7 @@ async function renderImport() {
     <form id="if" class="stack">
       <label>PDF files <input type="file" id="files" accept="application/pdf" multiple></label>
       <label>Or a folder <input type="file" id="folder" webkitdirectory></label>
-      <label>Tags for all, comma separated <input id="itags" placeholder="airway, exam"></label>
+      <label>Shared tags for all, comma separated <input id="itags" placeholder="airway, exam"></label>
       <button class="primary">Import</button></form>
     <p id="imsg" class="muted"></p><ul id="ires" class="list"></ul></section>`);
   c.view.replaceChildren(page);
@@ -655,7 +655,7 @@ async function renderPaper(id, hitPage) {
   };
   drawStar();
   const inl = [...(starred.has(id) ? ['Starred'] : []), ...lists.filter((l) => !l.starred && l.paperIds.includes(id)).map((l) => l.name)];
-  $in(page, '#inlists').textContent = inl.length ? `In ${inl.join(', ')}` : 'Not in any of your lists yet.';
+  $in(page, '#inlists').textContent = inl.length ? `In ${inl.join(', ')}` : 'Not in any of your private lists yet.';
   const unhand = page.querySelector('#unhand');
   if (unhand) unhand.onclick = async () => { unhand.disabled = true; await releaseHand(c, id).catch(() => {}); renderPaper(id, hitPage); };
   $in(page, '#addto').onclick = () => { current() ? addToSheet(c, [id], () => renderPaper(id, hitPage)) : loadLibrary().then(() => addToSheet(c, [id], () => renderPaper(id, hitPage))); };

@@ -58,7 +58,7 @@ export function editSheet(c, id, p, onSaved) {
       <label>PubMed ID <input id="xpmid" inputmode="numeric" autocomplete="off"></label>
       <p><button type="button" id="xlook">Look up from the DOI or PubMed ID</button> <span class="muted" id="xmsg" role="status"></span></p>
       <label>Abstract <textarea id="xabstract" rows="8"></textarea></label>
-      <label>Tags, comma separated <input id="xtags"></label>
+      <label>Shared tags, comma separated <input id="xtags"></label>
       <label>Why read it <input id="xwhy" maxlength="200"></label>
       <p class="muted">Fields you change here are kept: Refresh and Fill missing details will not overwrite them.</p>
       <button class="primary" id="xsave">Save</button></form>`);
