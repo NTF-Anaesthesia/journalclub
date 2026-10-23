@@ -7,6 +7,7 @@ export default defineConfig({
     { name: 'app', testIgnore: /scale\.spec\.js/ },
     { name: 'scale', testMatch: /scale\.spec\.js/, dependencies: ['app'] },
   ],
+  workers: 1,
   timeout: 30000,
   use: { baseURL: 'http://localhost:5000', launchOptions: existsSync('/opt/pw-browsers/chromium') ? { executablePath: '/opt/pw-browsers/chromium' } : {} },
   webServer: {

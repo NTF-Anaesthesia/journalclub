@@ -6,7 +6,7 @@
     "build": "esbuild src/app.js --bundle --format=esm --splitting --minify --outdir=public --chunk-names=chunks/[name]-[hash] && node -e \"require('fs').copyFileSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','public/pdf.worker.min.mjs')\"",
     "test:rules": "firebase emulators:exec --only firestore --project demo-jc \"node --test rules-test/rules.test.js\"",
     "test:e2e": "npm run build && firebase emulators:exec --only firestore,auth --project demo-jc \"playwright test\"",
-    "test": "npm run test:unit && npm run test:rules && npm run test:e2e",
+    "test": "npm run test:unit && npm run build && firebase emulators:exec --only firestore,auth --project demo-jc \"playwright test && node --test rules-test/rules.test.js\"",
     "test:unit": "node --test test/*.test.js"
   },
   "devDependencies": {
