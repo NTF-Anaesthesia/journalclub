@@ -4,6 +4,7 @@
 //
 //   node import.js --key sa.json --state state.jsonl --folder DIR[=tag] [--folder DIR2 ...] [--report report.csv]
 //                  [--apply] [--max N] [--model gemma4:12b] [--no-ai] [--site https://...] [--email you@example.org]
+//                  [--redo via=heading ...]
 import { parseArgs } from 'node:util';
 import { writeFileSync } from 'node:fs';
 import { firebaseConfig } from '../../src/config.js';
@@ -19,7 +20,7 @@ import { connect, IMPORT_UID } from './lib/auth.js';
 
 const { values: a } = parseArgs({ options: {
   key: { type: 'string' }, state: { type: 'string' }, report: { type: 'string', default: 'report.csv' },
-  folder: { type: 'string', multiple: true }, apply: { type: 'boolean', default: false }, max: { type: 'string' },
+  folder: { type: 'string', multiple: true }, redo: { type: 'string', multiple: true }, apply: { type: 'boolean', default: false }, max: { type: 'string' },
   model: { type: 'string', default: 'gemma4:12b' }, 'no-ai': { type: 'boolean', default: false },
   site: { type: 'string', default: 'https://journalclub.anantf.com' }, email: { type: 'string', default: 'journalclub@anantf.com' },
 } });
@@ -42,6 +43,9 @@ console.log(`${now()} library: ${papers.length} papers, ${papers.filter((p) => p
 const lib = libraryIndex(papers);
 const state = loadState(a.state);
 const save = (rec) => saveState(a.state, state, rec);
+// --redo field=value analyses again the files whose saved record matches (e.g. via=heading, status=error).
+const redo = (a.redo || []).map((r) => r.split('='));
+const toRedo = (rec) => rec.stage !== 'uploaded' && redo.some(([k, v]) => String(rec[k] ?? '') === v);
 const fetchFn = politeFetch(a.email);
 const ai = a['no-ai'] ? null : ollamaAi(a.model);
 const batch = { keys: new Map() };
@@ -68,7 +72,7 @@ await pool(entries, 2, async (entry) => {
   let rec = state.get(entry.hash);
   if (rec?.stage === 'uploaded') { results.push(rec); return; }
   try {
-    if (!rec?.status || rec.status === 'error') {
+    if (!rec?.status || toRedo(rec)) {
       rec = await analyse(entry, { pagesOf, lib, batch, fetchFn, email: a.email, ai, enrichFn: enrich });
       save(rec);
     } else {

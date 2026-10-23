@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { titleFromFileName, headingFromPage, pickTitle } from '../lib/names.js';
+import { titleFromFileName, headingFromPage, pickTitle, aiTitle } from '../lib/names.js';
 import { splitPages, hasText } from '../lib/pdftext.js';
 import { parseFolderArg } from '../lib/scan.js';
 import { loadState, saveState } from '../lib/state.js';
@@ -29,6 +29,35 @@ test('headingFromPage skips running headers and boilerplate, pickTitle falls bac
   assert.equal(headingFromPage('Page 1\n12 3 4\n'), null);
   assert.deepEqual(pickTitle('Some-file-name.pdf', 'x y'), { title: 'Some file name', from: 'filename' });
   assert.equal(pickTitle('f.pdf', page).from, 'heading');
+});
+
+test('headingFromPage joins a wrapped title and skips side boxes, affiliations, captions and second lines', () => {
+  const wrapped = 'WARM SALINE VERSUS COLD SALINE FOR MADE-UP OUTCOMES IN ADULTS\nAND THE PLACEBO GROUP\nJane Roe';
+  assert.equal(headingFromPage(wrapped), 'Warm saline versus cold saline for made-up outcomes in adults and the placebo group');
+  assert.equal(headingFromPage('Do made-up trials of warm saline benefit from\nlarger samples? A pretend study\nJane Roe'),
+    'Do made-up trials of warm saline benefit from larger samples? A pretend study');
+  assert.equal(headingFromPage('AND THE MADE-UP SYNDROME OF WARM HANDS\nA made-up trial of cold hands in adults'), 'A made-up trial of cold hands in adults');
+  assert.equal(headingFromPage('Made-up warming Learning objectives\nof cold rooms After reading this article, you'), 'Made-up warming');
+  assert.equal(headingFromPage('Jane Roe, Pretend University School of Medicine, Nowhere\nA made-up review of warm saline today'), 'A made-up review of warm saline today');
+  assert.equal(headingFromPage('Fig 2. (a) A made-up needle under pretend control in a model\nA made-up review of warm saline today'), 'A made-up review of warm saline today');
+});
+
+test('pickTitle: a series file name wins over a cut heading, without its cut last word', () => {
+  const page = 'MADE-UP SECTION\nMade-up warming Learning objectives\nof cold rooms in pretend wards';
+  assert.deepEqual(pickTitle('AICM_202401 Made-up-warming-of-cold-rooms_2024_mpaic.pdf', page), { title: 'Made up warming of cold rooms', from: 'filename' });
+  assert.deepEqual(pickTitle('AICM_202401 Made-up-warming-of-cold-ro.pdf', page), { title: 'Made up warming of cold', from: 'filename' });
+  assert.equal(titleFromFileName('AICM_202405 Made-up-topic--a-review_2024_Anaesthesia---Intensive-Care.pdf'), 'Made up topic: a review');
+});
+
+test('aiTitle keeps a model title only when it is printed on the page', () => {
+  const page = `Pretend Journal\nA made-up trial of warm\nsaline in adults\n${PROSE}`;
+  const ai = (response) => ({ run: async () => ({ response }) });
+  return Promise.all([
+    aiTitle(ai('Title: "A made-up trial of warm saline in adults"'), 'f.pdf', page).then((t) => assert.equal(t, 'A made-up trial of warm saline in adults')),
+    aiTitle(ai('A study of something else entirely here'), 'f.pdf', page).then((t) => assert.equal(t, null)),
+    aiTitle(ai('NONE'), 'f.pdf', page).then((t) => assert.equal(t, null)),
+    aiTitle(null, 'f.pdf', page).then((t) => assert.equal(t, null)),
+  ]);
 });
 
 test('splitPages ends pages at form feeds and hasText spots scanned PDFs', () => {

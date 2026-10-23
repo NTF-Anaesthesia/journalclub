@@ -1,9 +1,9 @@
 // The analysis of one PDF (no writes anywhere): text, identity, metadata, abstract, duplicates. Dependencies are
 // passed in, so tests run on made-up text with no network.
-import { enrich } from '../../../worker/enrich.js';
+import { enrich, findDois, findPmid } from '../../../worker/enrich.js';
 import { atotwNumber } from '../../../src/doi.js';
 import { normTitle } from '../../../src/dupes.js';
-import { pickTitle } from './names.js';
+import { pickTitle, aiTitle } from './names.js';
 import { hasText } from './pdftext.js';
 
 export const MAX_PDF = 25 * 1024 * 1024;
@@ -29,13 +29,18 @@ export async function analyse(entry, { pagesOf, lib, batch, enrichFn = enrich, f
   rec.pages = pages.length;
   if (!pages.length || !hasText(pages)) return { ...rec, status: 'needs-ocr', problem: 'no text layer (scanned)' };
 
-  const fallback = pickTitle(entry.name, pages[0]);
+  // No ID printed on the first pages: the title is the only way to find the paper, so a local model reads it too.
+  let fallback = pickTitle(entry.name, pages[0]);
+  if (ai && !findDois(pages.slice(0, 3)).length && !findPmid(pages.slice(0, 3))) {
+    const t = await aiTitle(ai, entry.name, pages[0]);
+    if (t) fallback = { title: t, from: 'ai-title' };
+  }
   const out = await enrichFn({
     pages, fetchFn, email, ai,
     paper: { title: fallback.title, doi: '', atotw: atotwNumber(entry.name) },
   });
   const f = out.found || {};
-  rec.via = out.via || (fallback.from === 'heading' ? 'heading' : 'filename');
+  rec.via = out.via || fallback.from;
   rec.doi = f.doi || '';
   rec.pmid = f.pmid || '';
   rec.title = f.title || fallback.title;
