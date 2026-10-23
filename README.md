@@ -14,6 +14,12 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
   kept in Firestore's persistent cache: a repeat open reads only papers whose `changedAt` is newer than the newest seen,
   plus one count (a mismatch, from a paper removed elsewhere, reads it all again). The list shows 50 at a time.
   `src/search.js` builds a MiniSearch index on the phone over titles, authors, journal, tags, why and abstracts.
+- Search syntax (`src/query.js`): free words (AND, prefix), `"exact phrase"`, `a OR b`, `-word`, and operators that can be
+  negated: `tag:` / `#tag`, `author:`, `journal:`, `year:2020` / `2018-2024` / `>2020`, `is:starred|presented|mine`,
+  `has:pdf|abstract|doi|slides|tags`, `in:title|abstract|pdf|notes`. Operators filter the cached catalogue; free words go
+  to MiniSearch and to the Worker (`ftsQuery` turns phrases, OR and -words into FTS5). The box suggests tags, authors,
+  journals and operator values as you type; saved searches (`users/<uid>.searches`, private, 20 at most) show as chips,
+  recent ones (this device) in the empty box. Rows with a presented session that has slides get a Slides pill.
 - PDF and notes search (`worker/search.js`): PDF text is extracted in the browser with PDF.js at upload (`src/pdf.js`) and
   sent to `PUT /api/index/<paper>`; the Worker keeps one FTS5 row per page in the D1 database `journalclub-search`
   (binding `SEARCH`; the table is created on first use), plus page 0 for the paper's notes (`POST /api/index/<paper>/notes`

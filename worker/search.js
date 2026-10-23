@@ -82,11 +82,32 @@ export async function firstPages(db, paperId, n = 3) {
   return results.map((r) => r.text);
 }
 
-// Each word becomes a quoted prefix term; FTS5 ANDs them. Returns null when there is nothing to search.
+// The library's search syntax, for FTS5: each word a quoted prefix term (ANDed), "a phrase" an exact phrase,
+// a OR b either, -word / -"a phrase" left out. Anything else in the box is plain text. Null when there is nothing to
+// search (only excluded words, or no words).
 export function ftsQuery(q) {
-  const words = String(q || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
-  const terms = [...new Set(words)].filter((w) => w.length > 1 || /\d/.test(w)).slice(0, 8);
-  return terms.length ? terms.map((w) => `"${w}"*`).join(' ') : null;
+  const words = (s) => s.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const keep = (w) => w.length > 1 || /\d/.test(w);
+  const groups = [], not = [], seen = new Set();
+  let n = 0, join = false;
+  for (const m of String(q || '').matchAll(/(-?)"([^"]+)"|(\S+)/g)) {
+    if (n >= 8) break;
+    if (m[3] === 'OR' && groups.length) { join = true; continue; }
+    const neg = m[1] === '-' || (m[3] || '').startsWith('-');
+    const ws = words(m[2] ?? m[3]).filter(keep);
+    if (!ws.length) { join = false; continue; }
+    const terms = m[2] != null ? [`"${ws.join(' ')}"`] : ws.map((w) => `"${w}"*`);
+    if (neg) { not.push(terms[0]); join = false; continue; }
+    for (const t of terms) {
+      if (seen.has(t) || n >= 8) continue;
+      seen.add(t); n++;
+      if (join) groups.at(-1).push(t); else groups.push([t]);
+      join = false;
+    }
+  }
+  if (!groups.length) return null;
+  const pos = groups.map((g) => (g.length > 1 ? `(${g.join(' OR ')})` : g[0])).join(' ');
+  return not.length ? `(${pos}) NOT (${not.slice(0, 4).join(' OR ')})` : pos;
 }
 
 // Best rows first; one hit per paper, with its best PDF page (a notes-only hit has page 0).

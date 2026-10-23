@@ -93,9 +93,10 @@ button.plain { background:none; padding:0; min-height:44px; display:inline-flex;
 .list li.paper.picked { background:var(--app-blush); }
 .list li.paper a { -webkit-touch-callout:none; }
 .list li.paper .authors { font-size:var(--app-t-footnote); }
-.list li.paper .pills { display:flex; flex-wrap:wrap; gap:var(--app-s1); margin-top:2px; }
+.list li.paper .pills { display:flex; flex-wrap:wrap; align-items:center; gap:var(--app-s1); margin-top:2px; }
 .list li.paper .pills > * { margin:0; }
 .list li.paper a.tag { text-decoration:none; }
+button.pdf-pill { min-height:0; border:0; font-family:inherit; line-height:inherit; cursor:pointer; }
 .pdf-pill { display:inline-flex; align-items:center; gap:4px; font-size:var(--app-t-caption); font-weight:600; padding:2px 10px; border-radius:var(--app-r-full);
   background:var(--app-blush); color:var(--app-wine); text-decoration:none; }
 .warn-text { color:var(--app-warn); }
@@ -178,3 +179,29 @@ a.plain { color:inherit; text-decoration:none; }
 .pdf-hl { position:absolute; background:rgba(255,213,0,.45); mix-blend-mode:multiply; border-radius:2px; pointer-events:none; }
 .offline-badge { font-size:var(--app-t-caption); color:var(--app-wine); font-weight:600; }
 .reader-pages { padding-bottom:60vh; } /* lets the last pages scroll to the top, so a jump to any page lands there */
+
+/* Library search box: save button inside, suggestions below; count, Sort and Select on one line. */
+form.searchbox { display:block; position:relative; margin:0 0 var(--app-s3); }
+.searchbox input { width:100%; box-sizing:border-box; padding-right:48px; }
+.ssave { position:absolute; right:2px; top:0; height:50px; background:none; color:var(--app-muted);
+  min-height:44px; min-width:44px; display:inline-flex; align-items:center; justify-content:center; padding:0; }
+.ssave[hidden] { display:none; }
+.ssave.on { color:var(--app-wine); } .ssave.on svg { fill:currentColor; }
+.sugg { margin:var(--app-s1) 0 0; padding:var(--app-s1) 0; list-style:none; background:var(--app-surface); border-radius:var(--app-r-lg);
+  box-shadow:0 0 0 1px var(--app-line); max-height:50vh; overflow:auto; } /* in the flow, so it never covers a row */
+.sugg[hidden] { display:none; }
+.sugg li { display:flex; align-items:center; gap:var(--app-s2); min-height:44px; padding:0 var(--app-s4); cursor:pointer; }
+.sugg li .sl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.sugg li.tip .sl { font-family:var(--app-mono); font-size:var(--app-t-footnote); font-weight:400; }
+.sugg li .sh { flex:none; font-size:var(--app-t-caption); }
+.sugg li.active, .sugg li:hover { background:var(--app-blush); }
+.sugg .sx { min-height:44px; min-width:32px; font-size:20px; color:var(--app-muted); }
+.chip.saved svg { flex:none; }
+.chip.saved span { max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+.listbar .count { color:var(--app-ink-soft); font-weight:500; font-size:var(--app-t-subhead); }
+.listbar .lbtns { display:inline-flex; align-items:center; gap:var(--app-s4); }
+.list.help li { padding:0; }
+.help-row { display:flex; flex-direction:column; align-items:flex-start; gap:2px; width:100%; min-height:50px; padding:var(--app-s2) var(--app-s4); background:none; text-align:left; color:var(--app-ink); }
+.help-row code { word-break:normal; }
+.list li.paper mark, .snippet mark { background:var(--app-blush); color:inherit; border-radius:2px; padding:0 1px; }
+.jc-session .pdf-pill { margin-left:var(--app-s1); vertical-align:middle; }

@@ -111,6 +111,10 @@ test('airplane mode: the shell loads and a starred PDF opens from the offline co
   await expect(page.getByText('Offline copy')).toBeVisible();
   await context.setOffline(false);
 
+  // In the library the Offline label sits on the PDF pill's line.
+  await page.goto(`/?emulator=${PROJECT}#/library`);
+  await expect(page.locator('#res li.paper .pills .pdf-pill + .offline-badge')).toHaveText('Offline');
+
   // Settings shows the space, and sign-out empties the cache.
   await page.goto(`/?emulator=${PROJECT}#/me`);
   await expect(page.getByText(/1 paper saved on this device/)).toBeVisible();

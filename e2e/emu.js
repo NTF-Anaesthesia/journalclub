@@ -17,3 +17,22 @@ export async function resetEmulators(request) {
 export const test = base.extend({
   resetEmulators: [async ({ request }, use) => { await resetEmulators(request); await use(); }, { auto: true }],
 });
+
+// Library filters that are not on the chip row live in the Filters sheet: turn one on (or check its count) there.
+export async function pickFilter(page, name) {
+  await page.locator('#chips').getByRole('button', { name: /^Filters/ }).click();
+  const d = page.getByRole('dialog', { name: 'Filters' });
+  await d.getByRole('button', { name }).click();
+  await page.keyboard.press('Escape');
+  await expect(d).toBeHidden();
+}
+export async function filterCount(page, name) {
+  const d = page.getByRole('dialog', { name: 'Filters' });
+  await expect(async () => { // the sheet shows the counts as they were when it opened
+    await page.locator('#chips').getByRole('button', { name: /^Filters/ }).click();
+    try { await expect(d.getByRole('button', { name })).toBeVisible({ timeout: 1000 }); } finally {
+      await page.keyboard.press('Escape');
+      await expect(d).toBeHidden();
+    }
+  }).toPass({ timeout: 10000 });
+}
