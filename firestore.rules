@@ -96,6 +96,15 @@ service cloud.firestore {
         && (!('doi' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('doi', '') == '')
         && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == '')
         && changedAtNowIfSet())
+        // An admin's "Tidy ATOTW": title, journal, year and the tutorial number (an int 1-2000; only admins write it).
+        || (isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'year', 'atotw', 'manual', 'changedAt'])
+        && (!changed('title') || (request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 500))
+        && (!changed('journal') || (request.resource.data.journal is string && request.resource.data.journal.size() <= 300))
+        && (!changed('year') || (request.resource.data.year is int && request.resource.data.year >= 1800 && request.resource.data.year <= 2100))
+        && (!changed('atotw') || (request.resource.data.atotw is int && request.resource.data.atotw >= 1 && request.resource.data.atotw <= 2000))
+        && (!changed('manual') || (request.resource.data.manual is list && request.resource.data.manual.size() <= 10))
+        && changedAtNowIfSet())
         // Any member edits a paper's details by hand ("Edit details"): `manual` lists the fields they typed, so
         // Refresh and "Fill missing details" leave those alone. Each field is checked only when it changes.
         || (isMember()

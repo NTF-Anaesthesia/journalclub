@@ -80,7 +80,7 @@ export const restore = (id, p) => { if (lib) { lib.papers.set(id, p); if (lib.bu
 
 // The newest 50 rows, saved on this device so the next open paints them before the catalogue loads.
 const slim = ([id, p]) => [id, {
-  title: p.title, journal: p.journal, year: p.year, tags: p.tags || [], authors: (p.authors || []).slice(0, 4),
+  title: p.title, journal: p.journal, year: p.year, atotw: p.atotw || null, tags: p.tags || [], authors: (p.authors || []).slice(0, 4),
   file: p.file ? { pages: p.file.pages } : null, abstract: p.abstract ? '1' : '', doi: p.doi || '',
   presented: (p.presented || []).slice(-2).map((e) => ({ sid: e.sid, date: e.date?.toMillis ? e.date.toMillis() : e.date })),
 }];

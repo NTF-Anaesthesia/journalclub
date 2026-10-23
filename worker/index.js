@@ -93,6 +93,13 @@ async function searchApi(request, url, env, member, fetchFn) {
     if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
     return backfill(member, env, await request.json().catch(() => ({})), fetchFn);
   }
+  const fp = /^\/api\/firstpage\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
+  if (fp) {
+    if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+    if (member.role !== 'admin') return json({ error: 'Admins only' }, 403);
+    if (!(await paperAs(member, fp[1], fetchFn))) return json({ error: 'No such paper' }, 404);
+    return json({ pages: await firstPages(env.SEARCH, fp[1], 1) });
+  }
   const en = /^\/api\/enrich\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
   if (en) {
     if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -101,7 +108,7 @@ async function searchApi(request, url, env, member, fetchFn) {
     if (!paper) return json({ error: 'No such paper' }, 404);
     const body = await request.json().catch(() => ({}));
     const pages = await firstPages(env.SEARCH, en[1]);
-    const out = await enrich({ pages, paper: { title: field(paper, 'title') || '', doi: field(paper, 'doi') || '' }, fetchFn,
+    const out = await enrich({ pages, paper: { title: field(paper, 'title') || '', doi: field(paper, 'doi') || '', atotw: Number(field(paper, 'atotw')) || null }, fetchFn,
       email: env.CONTACT_EMAIL || 'journalclub@anantf.com', ai: body.ai ? env.AI : null });
     return json(out);
   }
@@ -178,7 +185,7 @@ export async function api(request, env, fetchFn = fetch) {
     return json(out, out.error ? 404 : 200);
   }
 
-  if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/') || url.pathname.startsWith('/api/enrich/')) {
+  if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/') || url.pathname.startsWith('/api/enrich/') || url.pathname.startsWith('/api/firstpage/')) {
     return searchApi(request, url, env, member, fetchFn);
   }
   const sl = /^\/api\/slides\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original))?$/.exec(url.pathname);

@@ -3,9 +3,9 @@ import { atotwDoi } from './doi.js';
 
 const FIELDS = ['title', 'journal', 'authors', 'abstract'];
 
-// The identifier to look a stored paper up by: DOI, else PubMed ID, else an ATOTW number in its title.
+// The identifier to look a stored paper up by: DOI, else PubMed ID, else its ATOTW number (the field, else one in its title).
 export function refreshId(p) {
-  return p.doi || p.pmid || atotwDoi(p.title) || null;
+  return p.doi || p.pmid || (p.atotw ? `10.28923/atotw.${p.atotw}` : atotwDoi(p.title)) || null;
 }
 
 // Only the fields a lookup may change: title, journal, authors, abstract, and doi/pmid when the paper had none.

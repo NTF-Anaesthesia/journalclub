@@ -29,10 +29,11 @@ export function findDuplicates(entries) {
     why.set(a, why.get(a) || reason); why.set(b, why.get(b) || reason);
   };
   for (const [id] of entries) parent.set(id, id);
-  const byDoi = new Map(), byStart = new Map();
+  const byDoi = new Map(), byStart = new Map(), byAtotw = new Map();
   for (const [id, p] of entries) {
     const d = String(p.doi || '').trim().toLowerCase();
     if (d) { if (byDoi.has(d)) join(byDoi.get(d), id, 'Same DOI'); else byDoi.set(d, id); }
+    if (p.atotw) { if (byAtotw.has(p.atotw)) join(byAtotw.get(p.atotw), id, 'Same ATOTW number'); else byAtotw.set(p.atotw, id); }
     const t = normTitle(p.title);
     if (t.length >= 20) {
       const k = t.slice(0, 12);

@@ -158,7 +158,7 @@ export async function enrich({ pages, paper = {}, fetchFn, email, ai = null }) {
   const pmid = findPmid(head);
   if (!done && pmid) done = await tryId(pmid, 'pdf-pmid');
   if (!done) {
-    const atotw = atotwDoi(head[0]) || atotwDoi(paper.title);
+    const atotw = atotwDoi(head[0]) || (paper.atotw ? `10.28923/atotw.${paper.atotw}` : atotwDoi(paper.title));
     if (atotw) done = await tryId(atotw, 'atotw');
   }
   if (!done) {

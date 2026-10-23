@@ -353,6 +353,7 @@ export function moreSheet(c, ids, acts) {
       <li><button type="button" id="mcite">Copy citations (Vancouver)</button></li>
       <li><button type="button" id="mbib">Export BibTeX</button></li>
       ${admin ? `<li><button type="button" id="mdup">Find duplicates</button></li>
+      <li><button type="button" id="mtidy">Tidy ATOTW</button></li>
       <li><button type="button" id="mfill"${pdfs ? '' : ' disabled'}>Fill missing details (${plural(pdfs, 'PDF')})</button></li>
       <li><button type="button" id="mre"${pdfs ? '' : ' disabled'}>Reindex ${plural(pdfs, 'PDF')}</button></li>
       <li><button type="button" id="mrm" class="danger">Remove ${plural(ids.length, 'paper')}</button></li>` : ''}
@@ -366,6 +367,7 @@ export function moreSheet(c, ids, acts) {
     snack(c, `Exported ${plural(papers.length, 'citation')}`);
   };
   if (!admin) return;
+  d.querySelector('#mtidy').onclick = () => { d.close(); acts.tidy(); };
   d.querySelector('#mdup').onclick = () => { d.close(); location.hash = '#/duplicates'; };
   d.querySelector('#mfill').onclick = () => { d.close(); acts.fill(); };
   d.querySelector('#mre').onclick = () => { d.close(); acts.reindex(); };

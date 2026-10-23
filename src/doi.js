@@ -15,8 +15,12 @@ export function findDoi(text) {
 const ATOTW = /(?:^|[^a-z])atotw[\s_#.-]*(?:no\.?\s*)?(\d{1,4})(?!\d)/i;
 const SERIES = /tutorial\s+of\s+the\s+week/i;
 const TUTORIAL = /\btutorial[\s#]*(?:no\.?\s*)?(\d{2,4})(?!\d)/i;
-export function atotwDoi(s) {
+export function atotwNumber(s) {
   const t = String(s || '');
-  const n = ATOTW.exec(t)?.[1] || (SERIES.test(t) ? TUTORIAL.exec(t)?.[1] : null);
-  return n && Number(n) > 0 ? `10.28923/atotw.${Number(n)}` : null;
+  const n = Number(ATOTW.exec(t)?.[1] || (SERIES.test(t) ? TUTORIAL.exec(t)?.[1] : null));
+  return n > 0 ? n : null;
+}
+export function atotwDoi(s) {
+  const n = atotwNumber(s);
+  return n ? `10.28923/atotw.${n}` : null;
 }
