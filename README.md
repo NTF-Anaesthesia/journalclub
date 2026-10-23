@@ -13,9 +13,12 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
 - Library (`src/library.js`): papers, one note and rating per member, reading lists. PDF text is extracted in the browser
   with PDF.js at upload (`src/pdf.js`) and kept per page in `texts/<paper>`; `src/search.js` builds a MiniSearch index over
   titles, tags, notes, abstracts and PDF pages, so a hit opens the PDF at its page.
-- Search (`#/`) is the default page. Journal club (`src/club.js`): the club home (`#/home`) shows the next session and the most-voted papers; members vote once per
-  paper (`papers/<paper>/votes/<uid>`); admins build the presenter rota from the members list (`rota/main`) and plan
-  sessions (`sessions/<id>`: date, paper, presenter), which moves the rota on; the presenter adds the summary and slides link.
+- Search (`#/`) is the default page. Journal club (`src/club.js`): the club home (`#/home`) shows the next session. Any member plans a
+  session from the Plan a session sheet (`#/plan`, or `#/plan/<paper>` from a paper page): date, paper (search as you type),
+  presenter, coordinator, optional Teams link. A session (`sessions/<id>`) is edited by its creator, presenter, member coordinator and
+  admins; the creator and admins delete it. Each paper keeps a `presented: [{sid, date}]` summary, written in the session's batch, which
+  gives the library list its Presented badge. The paper page lists its sessions and their take-home points. Voting and the rota are gone
+  (old vote and rota data stay in Firestore, unreadable by the rules). Admins set the club's usual weekday in Admin.
 - `firestore.rules`: members read only their own row, admins manage members and invites; joining needs an unused, unexpired invite.
 - Tests: `npm run test:unit` (lookups on saved fixtures in `test/fixtures/`, DOI finder, Worker API), `npm run test:rules` (Firestore emulator, needs Java) and `npm run test:e2e` (Playwright at 390 px).
 
