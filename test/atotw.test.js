@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sentenceCase, strippedTitle, pageSpan, pageYear, tidyPlan, tidyWrite, ATOTW_JOURNAL } from '../src/atotw.js';
+import { sentenceCase, strippedTitle, pageSpan, pageYear, crossrefYear, tidyPlan, tidyWrite, ATOTW_JOURNAL } from '../src/atotw-plan.js';
 import { refreshId } from '../src/refresh.js';
 import { findDuplicates } from '../src/dupes.js';
 import { buildIndex, searchPapers } from '../src/search.js';
@@ -74,4 +74,18 @@ test('sentence case: capitals lowered except acronyms; mixed-case acronyms and d
   assert.equal(sentenceCase('ECG INTERPRETATION'), 'ECG interpretation');
   assert.equal(sentenceCase('sedation in icu'), 'Sedation in icu');
   assert.equal(sentenceCase(sentenceCase('SEDATION IN THE ICU')), 'Sedation in the ICU');
+});
+
+test('year: a loose year on a file-named paper, a lookup when page 1 has none, never a guess', () => {
+  const bare = 'Sedation in intensive care. Dr Jane Roe. First published 2011. The patient on the ventilator ...';
+  assert.equal(pageYear(bare), null);
+  assert.equal(pageYear(bare, true), 2011);
+  assert.equal(pageYear('Cited 1998 in a paper', true), null);
+  assert.equal(crossrefYear({ year: 2025 }), 2025);
+  assert.equal(crossrefYear({ message: { issued: { 'date-parts': [[2024, 5, 1]] } } }), 2024);
+  assert.equal(crossrefYear({}), null);
+  const p = { title: 'ATOTW 553 hypotension' };
+  assert.equal(tidyPlan(p, 'no date here').next.year, undefined);
+  assert.equal(tidyPlan(p, 'no date here', 2025).next.year, 2025);
+  assert.equal(tidyPlan({ ...p, manual: ['year'] }, 'x', 2025).next.year, undefined);
 });
