@@ -3,5 +3,7 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-10-01",
   "assets": { "directory": "./public", "binding": "ASSETS", "not_found_handling": "single-page-application" },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "journalclub-files" }],
+  "vars": { "CONTACT_EMAIL": "journalclub@anantf.com" },
   "routes": [{ "pattern": "journalclub.anantf.com", "custom_domain": true }]
 }
