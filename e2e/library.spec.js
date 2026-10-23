@@ -107,9 +107,13 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByLabel('Search the library').fill('rocuronium');
   expect(await noSideScroll(page)).toBe(true);
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
-  const popup = page.waitForEvent('popup');
+  // Record where the new tab is sent (headless browsers treat a PDF tab as a download, so its URL isn't observable).
+  await page.evaluate(() => {
+    window.__opened = [];
+    window.open = () => { const w = { location: {}, close() {} }; window.__opened.push(w); return w; };
+  });
   await page.getByRole('button', { name: 'Open PDF at page 1' }).click();
-  await expect.poll(async () => (await popup).url()).toMatch(/^blob:.*#page=1$/);
+  await expect.poll(() => page.evaluate(() => window.__opened[0]?.location.href || '')).toMatch(/^blob:.*#page=1$/);
 
   // Reading list.
   await page.getByRole('link', { name: 'Lists', exact: true }).click();
