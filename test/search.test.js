@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { api } from '../worker/index.js';
-import { ftsQuery, cleanPages, MARK } from '../worker/search.js';
+import { ftsQuery, cleanPages, resetSchemaCache, MARK } from '../worker/search.js';
 import { localD1 } from './d1.js';
 
 const tokenFor = (uid) => `x.${btoa(JSON.stringify({ user_id: uid })).replace(/=+$/, '')}.sig`;
@@ -161,4 +161,14 @@ test('GET /api/indexed lists papers with PDF pages indexed (notes alone do not c
   assert.ok(!got.includes('p2') && !got.includes('p3'));
   assert.equal((await api(req('/api/indexed', 'stranger'), env, W)).status, 401);
   assert.equal((await api(req('/api/indexed', 'mem2'), {}, W)).status, 503);
+});
+
+test('a D1 error on search answers 503 with a plain message', async () => {
+  const W = world({ members, papers });
+  const broken = { batch: async () => { throw new Error('D1 over its limit'); }, prepare: () => { throw new Error('D1 over its limit'); } };
+  resetSchemaCache();
+  const r = await api(req('/api/search?q=propofol', 'mem2'), { SEARCH: broken }, W);
+  assert.equal(r.status, 503);
+  assert.equal((await r.json()).error, 'PDF search unavailable right now');
+  resetSchemaCache();
 });

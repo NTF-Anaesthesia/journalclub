@@ -56,8 +56,8 @@ async function apiFetch(path, init = {}) {
 async function serverSearch(q) {
   try {
     const r = await apiFetch('/api/search?q=' + encodeURIComponent(q));
-    return r.ok ? (await r.json()).hits || [] : [];
-  } catch { return []; }
+    return r.ok ? { hits: (await r.json()).hits || [] } : { hits: [], down: r.status === 503 };
+  } catch { return { hits: [] }; }
 }
 const snippetHtml = (s) => c.esc(s).replace(/\u0002/g, '<mark>').replace(/\u0003/g, '</mark>');
 
@@ -217,7 +217,10 @@ async function renderSearch() {
     showHits(local, false);
     timer = setTimeout(async () => {
       const server = await serverSearch(ui.q);
-      if (mine === seq && page.isConnected) showHits(mergeHits(local, server, (id) => papers.has(id)), true);
+      if (mine !== seq || !page.isConnected) return;
+      const merged = mergeHits(local, server.hits, (id) => papers.has(id));
+      showHits(merged, true);
+      if (server.down) setCount(`${merged.length ? `${merged.length} found. ` : ''}PDF search unavailable right now.`);
     }, 250);
   };
   const redraw = () => { drawChips(); show(); };
