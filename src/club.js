@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 
 import { dirty as dirtyLibrary } from './library.js';
+import { personIndex } from './people.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
   sessionMarkdown, csvExport,
@@ -164,7 +165,14 @@ async function renderPlan(paperId, sid) {
   ss.forEach((d) => { const x = d.data(); note(x.presenterName, x.presenterUid); note(x.coordinatorName, x.coordinatorUid); });
   const me = c.member.name || c.user.displayName || c.user.email;
   note(me, c.user.uid);
-  if (isAdmin()) (await getDocs(collection(c.db, 'members'))).forEach((d) => note(d.data().name || d.data().email, d.id));
+  const linked = [...people].map(([name, uid]) => ({ name, uid }));
+  linked.push({ name: me, uid: c.user.uid, email: c.user.email });
+  if (isAdmin()) (await getDocs(collection(c.db, 'members'))).forEach((d) => {
+    note(d.data().name || d.data().email, d.id);
+    linked.push({ name: d.data().name, uid: d.id, email: d.data().email });
+  });
+  const findUid = personIndex(linked);
+  let warned = '';
 
   const page = c.el(`<section class="card"><p><a href="#/${sid ? 'session/' + c.esc(sid) : 'sessions'}">← ${sid ? 'Session' : 'Sessions'}</a></p>
     <h1>${sid ? 'Edit session' : 'Plan a session'}</h1>
@@ -215,10 +223,18 @@ async function renderPlan(paperId, sid) {
     const teams = $in(form, '#steams').value.trim();
     if (teams && !safeUrl(teams)) { msg.textContent = 'The Teams link must start with https://'; return; }
     const pres = $in(form, '#spres').value.trim(); const coord = $in(form, '#scoord').value.trim();
+    const presUid = people.get(pres) || findUid(pres);
+    // A presenter not linked to a member can add a point but not the summary, slides or discussion: say so once.
+    if (pres && !presUid && warned !== pres) {
+      warned = pres;
+      msg.textContent = `${pres} isn't linked to a member account, so they won't be able to edit the summary, slides or discussion. `
+        + 'Pick them from the list (or invite them first), or press Save again to keep the name only.';
+      return;
+    }
     const when = Timestamp.fromDate(new Date(`${date.value}T00:00:00`));
     const plan = {
       date: when, paperId: paper.id, paperTitle: paper.title,
-      presenterUid: people.get(pres) || '', presenterName: pres, coordinatorUid: people.get(coord) || '', coordinatorName: coord,
+      presenterUid: presUid, presenterName: pres, coordinatorUid: people.get(coord) || findUid(coord), coordinatorName: coord,
     };
     msg.textContent = 'Saving…';
     try {
@@ -326,6 +342,7 @@ async function renderSession(sid) {
 async function adminSessionTools(snap, s, template) {
   const ms = await getDocs(collection(c.db, 'members'));
   const members = ms.docs.map((d) => ({ uid: d.id, name: d.data().name || d.data().email }));
+  const findUid = personIndex(ms.docs.map((d) => ({ uid: d.id, name: d.data().name, email: d.data().email })));
   const box = c.el(`<div class="stack"><form class="stack" id="atools"><h2>Admin</h2>
     <label>Coordinator <input id="acoord" list="amembers" maxlength="120" placeholder="Pick a member or type a name"></label>
     <datalist id="amembers">${members.map((m) => `<option value="${c.esc(m.name)}">`).join('')}</datalist>
@@ -341,7 +358,7 @@ async function adminSessionTools(snap, s, template) {
   $in(box, '#atools').onsubmit = async (e) => {
     e.preventDefault();
     const name = $in(box, '#acoord').value.trim();
-    const hit = members.find((m) => m.name === name);
+    const hit = members.find((m) => m.name === name) || members.find((m) => m.uid === findUid(name));
     const url = $in(box, '#ateams').value.trim();
     if (url && !safeUrl(url)) { $in(box, '#amsg').textContent = 'The Teams link must start with https://'; return; }
     try {
