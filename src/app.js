@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
-import { renderClubRoute, CLUB_ROUTES } from './club.js';
+import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
 // On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.
@@ -80,7 +80,7 @@ const TABS = [
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
 const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', home: 'home', lists: 'lists', list: 'lists',
-  vote: 'vote', sessions: 'sessions', session: 'sessions', rota: 'sessions' };
+  vote: 'vote', sessions: 'sessions', session: 'sessions', point: 'sessions', rota: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
 function renderBar() {
@@ -202,8 +202,32 @@ async function renderAdmin() {
       <button class="primary">Create invite link</button></form>
     <p id="newlink" class="muted"></p>
     <h2>Open invites</h2><ul id="invites" class="list"></ul>
-    <h2>Members</h2><ul id="members" class="list"></ul></section>`);
+    <h2>Members</h2><ul id="members" class="list"></ul>
+    <h2>Meeting</h2>
+    <form id="club" class="stack"><label>Standing Teams link <input id="cteams" type="url" placeholder="https://…" pattern="https://.*"></label>
+      <label>Default start time <input id="ctime" type="time"></label>
+      <label>Prompt for members' points <input id="cprompt" maxlength="120"></label>
+      <button class="primary">Save meeting settings</button><p id="cmsg" class="muted"></p></form>
+    <h2>Discussion form</h2><p class="muted">Applies to all future sessions. A session can override it on its own page.</p>
+    <div id="dform"></div></section>`);
   view.replaceChildren(page);
+  const ctx = { db, user, member, view, el, esc };
+  Promise.all([loadClub(ctx), loadTemplate(ctx)]).then(([club, fields]) => {
+    page.querySelector('#cteams').value = club.teamsUrl || '';
+    page.querySelector('#ctime').value = club.time || '';
+    page.querySelector('#cprompt').value = club.pointPrompt || '';
+    page.querySelector('#dform').append(fieldEditor(ctx, fields, (f) => saveTemplate(ctx, f)));
+  });
+  page.querySelector('#club').onsubmit = async (e) => {
+    e.preventDefault();
+    const msg = page.querySelector('#cmsg');
+    const teamsUrl = page.querySelector('#cteams').value.trim();
+    if (teamsUrl && !/^https:\/\/[^\s"<>]+$/.test(teamsUrl)) { msg.textContent = 'The link must start with https://'; return; }
+    try {
+      await saveClub(ctx, { teamsUrl, time: page.querySelector('#ctime').value, pointPrompt: page.querySelector('#cprompt').value.trim() });
+      msg.textContent = 'Saved.';
+    } catch { msg.textContent = 'Could not save.'; }
+  };
 
   async function refresh() {
     const [ms, is] = await Promise.all([
