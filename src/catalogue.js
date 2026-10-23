@@ -22,6 +22,10 @@ const newest = (papers, since) => {
 
 export const current = () => lib;
 
+// A Firestore call that hangs (seen on a phone: the count never came back) must not hold the page.
+export const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(`${what} timed out`), { code: 'timeout' })), ms))]);
+const note = (k, e) => { timing[k] = e?.code || e?.message || String(e); console.warn('catalogue', k, e); };
+
 export async function loadLibrary(db) {
   if (lib && !lib.stale) return lib;
   const t0 = performance.now();
@@ -36,10 +40,13 @@ export async function loadLibrary(db) {
     timing.cache = Math.round(performance.now() - t0);
   }
   if (papers && since) {
-    const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))), getCountFromServer(col)]);
+    // The count only catches papers removed elsewhere: if it fails or is slow, keep the cached list and say so.
+    const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))),
+      withTimeout(getCountFromServer(col), 4000, 'count').catch((e) => { note('countError', e); return null; })]);
     delta.docs.forEach((d) => { papers.set(d.id, cleanPaper(d.data())); if (lib?.built) updateIndex(lib.built, d.id, papers.get(d.id)); });
     fetched = delta.size;
-    if (papers.size !== count.data().count) papers = null;
+    if (count && papers.size !== count.data().count) papers = null;
+    else if (!count) mode = 'delta-nocount';
   }
   if (!papers || !since) {
     const all = await getDocs(col);
@@ -48,7 +55,7 @@ export async function loadLibrary(db) {
   }
   const t = newest(papers, since);
   if (t) writeSync(t);
-  const keep = mode === 'delta' && lib?.built;
+  const keep = mode !== 'full' && lib?.built;
   lib = { papers, built: keep ? lib.built : null, stale: false,
     get index() { // built when idle after the first paint, or on the first keystroke
       if (!this.built) { const s = performance.now(); this.built = buildIndex(this.papers); timing.index = Math.round(performance.now() - s); }
@@ -71,6 +78,11 @@ const slim = ([id, p]) => [id, {
 }];
 export function writeHead(entries) {
   try { localStorage.setItem(HEAD_KEY, JSON.stringify(entries.slice(0, 50).map(slim))); } catch { /* full or private */ }
+}
+// Stand-in catalogue from the saved head when the real one is slow: marked partial so the count says "50+".
+export function headCatalogue() {
+  const papers = new Map(readHead() || []);
+  return { papers, partial: true, built: null, get index() { if (!this.built) this.built = buildIndex(this.papers); return this.built; } };
 }
 export function readHead() {
   try { const v = JSON.parse(localStorage.getItem(HEAD_KEY)); return Array.isArray(v) ? v : null; } catch { return null; }

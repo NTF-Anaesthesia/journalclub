@@ -8,7 +8,7 @@ import { searchPapers, mergeHits } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
 import { refreshId } from './refresh.js';
-import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing } from './catalogue.js';
+import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
@@ -118,10 +118,21 @@ async function renderSearch() {
       }
     }
   }
-  const [cat, starred, recent] = await Promise.all([loadLibrary(), loadStarred(c.db, c.user.uid), loadRecent(c.db, c.user.uid)]);
+  // Nothing here may hold the page: after a few seconds the saved head stands in (count "50+") and the real
+  // catalogue replaces it when it arrives. Failures go to window.__jcTiming (loadError, starredError, ...).
+  const why = (k) => (e) => { timing[k] = e?.code || e?.message || String(e); console.warn('library', k, e); };
+  const real = loadLibrary();
+  let [cat, starred, recent] = await Promise.all([
+    withTimeout(real, readHead()?.length ? 2500 : 8000, 'catalogue').catch((e) => { why('loadError')(e); return headCatalogue(); }),
+    withTimeout(loadStarred(c.db, c.user.uid), 5000, 'starred').catch((e) => { why('starredError')(e); return new Set(); }),
+    withTimeout(loadRecent(c.db, c.user.uid), 5000, 'recent').catch((e) => { why('recentError')(e); return []; })]);
   if (!page.isConnected) return;
   x.starred = starred; x.recent = recent;
-  const { papers } = cat;
+  let { papers } = cat;
+  if (cat.partial) {
+    real.then((full) => { if (page.isConnected && cat.partial) { cat = full; papers = full.papers; redraw(); } })
+      .catch((e) => { why('loadError')(e); if (page.isConnected) count.title = `Library not refreshed: ${timing.loadError}`; });
+  }
 
   let matchIds = [], info = new Map(), timer = 0, seq = 0, sel = null, mode = 'list';
   const narrowed = () => !!ui.q || filterOn(ui.filter);
@@ -162,9 +173,10 @@ async function renderSearch() {
     matchIds = entries.map(([id]) => id);
     ui.shown = Math.max(ui.shown, PAGE);
     redrawRows();
-    if (!papers.size) setCount('No papers yet. Add the first one.');
-    else setCount(`${matchIds.length} ${matchIds.length === 1 ? 'paper' : 'papers'} · ${sortLabel(ui.sort)}`);
-    if (!filterOn(ui.filter) && ui.sort === 'newest') writeHead(entries);
+    const more = cat.partial ? '+' : '';
+    if (!papers.size) setCount(cat.partial ? 'Still loading the library…' : 'No papers yet. Add the first one.');
+    else setCount(`${matchIds.length}${more} ${matchIds.length === 1 && !more ? 'paper' : 'papers'} · ${sortLabel(ui.sort)}`);
+    if (!cat.partial && !filterOn(ui.filter) && ui.sort === 'newest') writeHead(entries);
     drawSel();
   };
   const showHits = (hits, done) => {

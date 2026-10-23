@@ -212,3 +212,20 @@ test('admin: Find duplicates merges two papers, keeping notes, ratings, PDF, lis
   expect((await get('sessions/s-dup')).fields.paperId.stringValue).toBe('dk');
   expect(files.has('papers/dk.pdf')).toBe(true);
 });
+
+test('a count that never returns does not hold the page: Select and long-press work and the count line fills in', async ({ page }) => {
+  await signIn(page, 'slowcount@example.org');
+  for (const i of [1, 2, 3]) await seed(page, `slow${i}`, { title: s(`Slow count paper ${i}`), addedAt: at(T0 + i * 1000), changedAt: at(T0 + i * 1000) });
+  await open(page);
+  await expect(page.locator('#count')).toHaveText(/\d+ papers · Newest first/); // sync point and head saved
+  // From now on the count RPC hangs, as seen on a phone.
+  await page.route('**/*runAggregationQuery*', () => {});
+  await page.reload();
+  await expect(page.locator('#selb')).toBeEnabled({ timeout: 6000 });
+  await expect(page.locator('#count')).not.toHaveText(/Loading/);
+  await expect(page.locator('#count')).toHaveText(/\d+\+? papers · Newest first/);
+  await expect.poll(() => page.evaluate(() => window.__jcTiming.countError), { timeout: 8000 }).toBe('timeout');
+  await longPress(page, page.locator('#res li').first());
+  await expect(page.locator('#scount')).toHaveText('1 selected');
+  await expect(page.locator('#selbar')).toBeVisible();
+});
