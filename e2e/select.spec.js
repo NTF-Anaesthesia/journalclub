@@ -103,7 +103,7 @@ test('admin: filter No abstract, long-press, All, Refresh touches only those; PD
   await expect(page.locator('#res li .hit')).toHaveText('p. 1');
 });
 
-test('member: sort by year, star on one device and see it in Saved on another, filter starred, add to a shared list as a non-owner, bulk tag with undo', async ({ browser }) => {
+test('member: sort by year, star on one device and see it in Saved on another, filter starred, make a private list from the sheet, someone else\'s old shared list stays hidden, bulk tag with undo', async ({ browser }) => {
   test.setTimeout(60000);
   const a = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await workerApi(a, PROJECT);
@@ -141,15 +141,20 @@ test('member: sort by year, star on one device and see it in Saved on another, f
   await expect(b.locator('#res li')).toHaveCount(1);
   expect(await noSideScroll(b)).toBe(true);
 
-  // A shared list made by someone else: this member adds a paper to it.
+  // Lists are private: someone else's old shared list is not offered; a new list is made from the sheet.
   await b.getByRole('link', { name: 'Year paper 2012' }).click();
   await b.getByRole('button', { name: 'Lists and tags…' }).click();
   const sheetB = b.getByRole('dialog', { name: 'Add 1 paper to' });
-  await sheetB.getByRole('checkbox', { name: /Journal club picks/ }).check();
+  await expect(sheetB.getByText('Journal club picks')).toHaveCount(0);
+  await sheetB.getByLabel('Find or create a list or tag').fill('Exam prep');
+  await sheetB.getByRole('button', { name: '+ New private list “Exam prep”' }).click();
+  await expect(sheetB.getByRole('checkbox', { name: /Exam prep/ })).toBeChecked(); // the list exists before Save
   await sheetB.getByRole('button', { name: 'Save' }).click();
-  await expect(b.getByText('In Starred, Journal club picks')).toBeVisible();
-  await open(b, 'list/shared1');
-  await expect(b.getByRole('link', { name: 'Year paper 2012' })).toBeVisible();
+  await expect(b.getByText('In Starred, Exam prep')).toBeVisible();
+  await open(b, 'lists');
+  await expect(b.getByRole('heading', { name: 'Private lists' })).toBeVisible();
+  await expect(b.getByRole('link', { name: /Exam prep/ })).toBeVisible();
+  await expect(b.getByText('Journal club picks')).toHaveCount(0);
 
   // Bulk tag from select mode, then Undo.
   await open(a);
@@ -158,7 +163,7 @@ test('member: sort by year, star on one device and see it in Saved on another, f
   await a.getByRole('button', { name: 'Add to…' }).click();
   const sheetA = a.getByRole('dialog', { name: /^Add \d+ papers to$/ });
   await sheetA.getByLabel('Find or create a list or tag').fill('exam');
-  await sheetA.getByRole('button', { name: '+ New tag “exam”' }).click();
+  await sheetA.getByRole('button', { name: '+ New shared tag “exam”' }).click();
   await sheetA.getByRole('button', { name: 'Save' }).click();
   await expect(a.getByRole('button', { name: 'Untagged · 0' })).toBeVisible();
   await a.locator('.snack').getByRole('button', { name: 'Undo' }).click();
@@ -203,6 +208,23 @@ test('admin: Find duplicates merges two papers, keeping notes, ratings, PDF, lis
   expect((await get('lists/l-dup')).fields.paperIds.arrayValue.values.map((v) => v.stringValue)).toEqual(['dk']);
   expect((await get('sessions/s-dup')).fields.paperId.stringValue).toBe('dk');
   expect(files.has('papers/dk.pdf')).toBe(true);
+});
+
+test('admin: opening Saved turns an old shared list into a shared tag and makes the list private to its maker', async ({ page }) => {
+  await signIn(page, 'admin.tags@example.org', 'admin');
+  await seed(page, 'sl1', { title: s('Epidural in labour'), tags: arr(['obstetric']), addedBy: s('someone'), addedAt: at(T0 + 30000) });
+  await seed(page, 'sl2', { title: s('Spinal for caesarean'), addedBy: s('someone'), addedAt: at(T0 + 31000) });
+  const a2 = (p) => p.then((r) => expect(r.ok()).toBeTruthy());
+  await a2(page.request.patch(`${DOCS}/lists/old-shared`, { headers: owner, data: { fields: { name: s('Obstetric, posting'), about: s(''),
+    paperIds: arr(['sl1', 'sl2']), createdBy: s('someone'), visibility: s('shared'), createdAt: at(T0) } } }));
+  await open(page, 'lists');
+  await expect(page.getByRole('heading', { name: 'Private lists' })).toBeVisible();
+  const get = async (path) => (await page.request.get(`${DOCS}/${path}`, { headers: owner })).json();
+  const tags = async (id) => ((await get(`papers/${id}`)).fields.tags?.arrayValue.values || []).map((v) => v.stringValue);
+  await expect.poll(async () => (await get('lists/old-shared')).fields.visibility.stringValue).toBe('private');
+  expect(await tags('sl1')).toEqual(['obstetric', 'obstetric posting']);
+  expect(await tags('sl2')).toEqual(['obstetric posting']);
+  expect((await get('lists/old-shared')).fields.createdBy.stringValue).toBe('someone');
 });
 
 test('a count that never returns does not hold the page: Select and long-press work and the count line fills in', async ({ page }) => {

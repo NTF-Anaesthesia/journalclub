@@ -1,5 +1,5 @@
 // Per-member state synced across devices: the Starred list (lists/star-<uid>, private), the last 20 papers
-// opened (users/<uid>.recent), and the reading lists the member can see (their own plus every shared one).
+// opened (users/<uid>.recent), and the member's private reading lists. Everything shared is a tag on the paper.
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where, serverTimestamp, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
@@ -50,27 +50,32 @@ export async function touchRecent(db, uid, id) {
   await setDoc(doc(db, 'users', uid), { recent: mine.recent, updatedAt: serverTimestamp() }).catch(() => {});
 }
 
-// Lists this member sees: { id, ...data, mine, shared, starred }. Starred first, then the member's own, then shared.
-// An admin's app also stamps lists from before visibility existed as shared, so members' queries find them.
+// The member's own lists: { id, ...data, mine, starred }, Starred first. Lists are private; shared groups are tags.
 export async function loadLists(db, uid, admin) {
   const col = collection(db, 'lists');
-  const [own, shared] = await Promise.all([
-    getDocs(query(col, where('createdBy', '==', uid))),
-    getDocs(query(col, where('visibility', '==', 'shared'))),
-  ]);
-  if (admin) {
-    const all = await getDocs(col).catch(() => null);
-    const old = all ? all.docs.filter((d) => !d.data().visibility) : [];
-    await Promise.all(old.map((d) => updateDoc(d.ref, { visibility: 'shared' }).catch(() => {})));
-    if (old.length) return loadLists(db, uid, false);
-  }
-  const byId = new Map();
-  for (const d of [...own.docs, ...shared.docs]) {
+  if (admin && !converted) { converted = true; await sharedListsToTags(db).catch((e) => { converted = false; console.error(e); }); }
+  const own = await getDocs(query(col, where('createdBy', '==', uid)));
+  const lists = own.docs.map((d) => ({ id: d.id, ...d.data(), mine: true, starred: d.data().kind === 'starred' }));
+  return lists.sort((a, b) => (b.starred - a.starred) || a.name.localeCompare(b.name));
+}
+
+let converted = false; // once per app load
+// Shared lists are retired: an admin's app turns each one (or one from before visibility existed) into a shared tag
+// named after it on every paper in it, then makes the list private to its maker, who keeps it.
+const listTag = (name) => String(name).replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
+async function sharedListsToTags(db) {
+  const all = await getDocs(collection(db, 'lists'));
+  for (const d of all.docs) {
     const l = d.data();
-    byId.set(d.id, { id: d.id, ...l, mine: l.createdBy === uid, shared: l.visibility !== 'private', starred: l.kind === 'starred' });
+    if (l.kind === 'starred' || l.visibility === 'private') continue;
+    const tag = listTag(l.name);
+    for (const pid of tag ? l.paperIds || [] : []) {
+      const p = await getDoc(doc(db, 'papers', pid)).catch(() => null);
+      const tags = p?.exists() ? p.data().tags || [] : null;
+      if (tags && !tags.includes(tag) && tags.length < 20) await updateDoc(p.ref, { tags: [...tags, tag], changedAt: serverTimestamp() });
+    }
+    await updateDoc(d.ref, { visibility: 'private' });
   }
-  const rank = (l) => (l.starred ? 0 : l.mine ? 1 : 2);
-  return [...byId.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 // The Starred list is shown even before the member has starred anything.
-export const starredStub = (uid) => ({ id: starId(uid), name: 'Starred', paperIds: [], mine: true, shared: false, starred: true, stub: true });
+export const starredStub = (uid) => ({ id: starId(uid), name: 'Starred', paperIds: [], mine: true, starred: true, stub: true });
