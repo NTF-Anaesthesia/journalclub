@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDois, findPmid, titleInText, extractAbstract, atotwDetails, enrich, aiSummary } from '../worker/enrich.js';
+import { findDois, findPmid, titleInText, extractAbstract, atotwDetails, enrich, aiSummary, cleanSummary } from '../worker/enrich.js';
 import { fixtureFetch } from './fixture-fetch.js';
 
 const ATOTW_OLD = 'ANAESTHESIA TUTORIAL OF THE WEEK 242 9th January 2012 Dr Jane Roe, Specialist Registrar Correspondence to jane@example.org '
@@ -91,4 +91,40 @@ test('aiSummary drops NONE and very short answers', async () => {
   assert.equal(await aiSummary({ run: async () => ({ response: 'Too short.' }) }, text), null);
   assert.equal(await aiSummary({ run: async () => { throw new Error('quota'); } }, text), null);
   assert.equal(await aiSummary(null, text), null);
+});
+
+test('cleanSummary strips preambles, labels and wrapping quotes from realistic model output', () => {
+  const body = 'Sedation in intensive care aims to relieve anxiety and pain. Light sedation improves outcomes.';
+  const bad = [
+    `Here is a 2-3 sentence summary of the article:\n\n${body}`,
+    `Here's a summary of the text: ${body}`,
+    `Here is a neutral summary of the article for a journal club:\n${body}`,
+    `**Summary:** ${body}`,
+    `Summary: ${body}`,
+    `## Abstract\n${body}`,
+    `This is a summary of the tutorial: ${body}`,
+    `"${body}"`,
+    `“${body}”`,
+    `Here is the summary:\n\n"${body}"`,
+  ];
+  for (const b of bad) assert.equal(cleanSummary(b), body, b);
+  assert.equal(cleanSummary(body), body);
+  // Text that merely mentions a summary mid-sentence is left alone.
+  const keep = 'This summary of trials shows that light sedation is safe in most adults.';
+  assert.equal(cleanSummary(keep), keep);
+  assert.equal(cleanSummary(null), '');
+  const two = `${body}\n\nA second paragraph follows.`;
+  assert.equal(cleanSummary(`Here is the abstract:\n\n${two}`), two);
+});
+
+test('aiSummary: uses the long-abstract prompt, cleans the output and reads a chat-style reply', async () => {
+  const seen = [];
+  const long = 'Light sedation shortens ventilation and improves recovery in intensive care patients. '.repeat(3);
+  const ai = { run: async (model, req) => { seen.push({ model, req }); return { choices: [{ message: { content: `Here is a summary of the article:\n\n${long}` } }] }; } };
+  const s = await aiSummary(ai, 'word '.repeat(200));
+  assert.equal(s, long.trim());
+  assert.equal(seen[0].model, '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+  assert.match(seen[0].req.messages[0].content, /150 to 250 words/);
+  assert.match(seen[0].req.messages[0].content, /Output only the abstract text/);
+  assert.ok(seen[0].req.max_tokens >= 400);
 });

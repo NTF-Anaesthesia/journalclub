@@ -219,7 +219,7 @@ async function runJob(kind, items, step, rows, onDone, missingKeys = REFRESH_MIS
 
 const REFRESH_ROWS = [['added', 'Abstract added', 'good'], ['updated', 'Updated', 'good'], ['unchanged', 'Already up to date', 'plain'],
   ['noAbstract', 'Found, still no abstract', 'plain'], ['notFound', 'Not found', 'warn'], ['noId', 'Skipped, no ID', 'bad']];
-const FILL_ROWS = [['lookup', 'Details and abstract from a lookup', 'good'], ['pdf', 'Abstract from the PDF', 'good'], ['ai', 'AI summary added', 'good'],
+const FILL_ROWS = [['lookup', 'Details and abstract from a lookup', 'good'], ['pdf', 'Abstract from the PDF', 'good'], ['ai', 'Summary added', 'good'],
   ['partial', 'Details added, no abstract', 'plain'], ['nothing', 'Nothing found', 'warn'], ['noText', 'No PDF text (Reindex first)', 'bad'], ['failed', 'Could not read', 'bad']];
 const REINDEX_ROWS = [['indexed', 'Indexed', 'good'], ['empty', 'No text in the PDF', 'plain'], ['failed', 'Could not read', 'bad']];
 
@@ -315,7 +315,7 @@ export function jobSheet(c, onSelect) {
     <div class="sheet-buttons"><button type="button" id="jstop">Stop</button><button type="button" class="primary" id="jhide">Hide</button></div>`);
   d.querySelector('#jx').textContent = {
     refresh: 'Looks each one up by DOI, PubMed ID or ATOTW number. Only title, journal, authors and abstract change; tags, notes and PDFs never do. Keeps going if you hide this.',
-    fill: 'Reads the start of each PDF for a DOI, PubMed ID or ATOTW number to look up, else uses its own abstract or summary, else writes a short AI summary labelled “AI summary”. Only empty fields are filled; anything edited by hand stays. Keeps going if you hide this.',
+    fill: 'Reads the start of each PDF for a DOI, PubMed ID or ATOTW number to look up, else uses its own abstract or summary, else writes a short abstract from the PDF text. Only empty fields are filled; anything edited by hand stays. Keeps going if you hide this.',
     reindex: 'Reads each PDF again and sends its text to PDF search. Keeps going if you hide this.',
   }[job.kind];
   const draw = () => {

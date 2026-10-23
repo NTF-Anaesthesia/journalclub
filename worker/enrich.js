@@ -1,6 +1,6 @@
 // "Fill missing details" (admin): find what a paper lacks from its own PDF text, already in D1 (pages 1..3).
 // Order: an ID printed in the PDF (DOI, PubMed ID, ATOTW number) looked up as usual; else a strict title search;
-// then the PDF's own abstract/summary section; then, only when asked, a short AI summary.
+// then the PDF's own abstract/summary section; then, only when asked, a machine-written abstract (stored with abstractSource 'ai', not shown as such).
 // Pure functions plus one orchestrator that takes fetch (and the AI binding) as arguments, so tests run on text.
 import { lookup, parseId } from './lookup.js';
 import { atotwDoi } from '../src/doi.js';
@@ -8,7 +8,7 @@ import { normTitle, similarity } from '../src/dupes.js';
 import { decodeEntities } from '../src/abstract.js';
 
 const CROSSREF_SEARCH = 'https://api.crossref.org/works?rows=3&select=DOI,title&query.bibliographic=';
-export const AI_MODEL = '@cf/meta/llama-3.2-3b-instruct';
+export const AI_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const MAX_DOIS = 2;
 const MIN_ABSTRACT = 150;
 const MAX_ABSTRACT = 3000;
@@ -91,19 +91,44 @@ async function titleSearch(title, fetchFn) {
   return hit ? String(hit.DOI).toLowerCase() : null;
 }
 
-// Cost note: ~1.5k input and ~120 output tokens per paper on this small model.
+const SYSTEM_PROMPT = [
+  'You write the abstract of a published article or tutorial for a journal club library.',
+  'Output only the abstract text: one or two paragraphs of about 150 to 250 words, in plain prose.',
+  'Cover the topic, the key points and any practical recommendations.',
+  'Be factual and neutral, and use only the text given; add nothing from outside it.',
+  'No introduction, no heading, no title, no bullet points, no quotation marks, and never mention that this is a summary or an abstract.',
+  'If the text is not an article or tutorial, reply with the single word NONE.',
+].join(' ');
+
+// Models still open with "Here is a 2-3 sentence summary of the article:", "Summary:" or wrap the text in quotes.
+const LEAD_IN = /^(?:(?:here(?:'|’)?s|here is|here are|this is|below is|the following is)\b[^\n:]{0,160}?\b(?:summary|abstract|overview)\b[^\n:]{0,160}(?::|\n|$)|(?:abstract|summary|overview|tl;?dr)[ \t]*(?::|\n))\s*/i;
+const QUOTES = /^["“”'‘’]+|["“”'‘’]+$/g;
+
+export function cleanSummary(raw) {
+  let s = String(raw ?? '').replace(/\r/g, '').replace(/\*\*|__|^#+\s*/gm, '').trim();
+  for (let i = 0; i < 3; i++) {
+    const before = s;
+    s = s.replace(LEAD_IN, '').replace(QUOTES, '').trim();
+    if (s === before) break;
+  }
+  return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Cost note: ~1.7k input and ~350 output tokens per paper on llama-3.3-70b-instruct-fp8-fast (about $0.13 per 100 papers).
 export async function aiSummary(ai, text) {
   const body = squash(text).slice(0, 6000);
   if (!ai || body.length < 400) return null;
   const out = await ai.run(AI_MODEL, {
-    max_tokens: 220,
+    max_tokens: 500,
+    temperature: 0.2,
     messages: [
-      { role: 'system', content: 'You write neutral two to three sentence summaries of published articles for a journal club. Use only the text given. If the text is not an article or tutorial, reply with the single word NONE.' },
+      { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: body },
     ],
   }).catch(() => null);
-  const s = squash(out?.response).replace(/^(?:summary|here is a summary)[^:]*:\s*/i, '');
-  return s.length >= 60 && !/^none\b/i.test(s) ? s.slice(0, 1200) : null;
+  const raw = out?.response ?? out?.choices?.[0]?.message?.content;
+  const s = cleanSummary(raw);
+  return s.length >= 60 && !/^none\b/i.test(s) ? s.slice(0, 2400) : null;
 }
 
 // pages: strings, page 1 first. paper: the stored { title, doi, pmid, abstract }. opts.ai: Workers AI binding or null.

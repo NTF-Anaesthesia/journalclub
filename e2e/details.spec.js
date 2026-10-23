@@ -64,7 +64,7 @@ test('admin Fill missing details: old ATOTW gets the PDF summary, a journal PDF 
   await expect(prog.getByRole('heading', { name: 'Done: 4 papers' })).toBeVisible({ timeout: 40000 });
   await expect(prog.locator('li', { hasText: 'Abstract from the PDF' })).toContainText('1');
   await expect(prog.locator('li', { hasText: 'Details and abstract from a lookup' })).toContainText('1');
-  await expect(prog.locator('li', { hasText: 'AI summary added' })).toContainText('1');
+  await expect(prog.locator('li', { hasText: 'Summary added' })).toContainText('1');
   await expect(prog.locator('li', { hasText: 'No PDF text' })).toContainText('1');
   expect(w.ai.calls).toHaveLength(1); // only the leftover; never the ATOTW or the journal paper
   await prog.getByRole('button', { name: 'Close' }).click();
@@ -79,16 +79,15 @@ test('admin Fill missing details: old ATOTW gets the PDF summary, a journal PDF 
   await page.goto(`/?emulator=${PROJECT}#/paper/j1`);
   await expect(page.getByRole('heading', { name: 'Why Most Published Research Findings Are False' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Publisher page' })).toBeVisible();
-  // Leftover: AI summary, labelled.
+  // Leftover: machine-written abstract, shown as an ordinary abstract with no AI label.
   await page.goto(`/?emulator=${PROJECT}#/paper/h1`);
-  await page.getByText('AI summary', { exact: true }).click();
-  await expect(page.getByText('Written by an AI from the PDF text, not by the authors.')).toBeVisible();
+  await expect(page.getByText(/AI summary|Written by an AI/)).toHaveCount(0);
+  await expect(page.getByText('Abstract', { exact: true })).toBeVisible();
   await expect(page.getByText('A short neutral summary of this handout')).toBeVisible();
   // Untouched.
   await page.goto(`/?emulator=${PROJECT}#/paper/k1`);
   await page.getByText('Abstract', { exact: true }).click();
   await expect(page.getByText('Kept as it is.')).toBeVisible();
-  await expect(page.getByText('AI summary', { exact: true })).toHaveCount(0);
 });
 
 test('any member edits details by hand; a later Refresh leaves those fields alone; the member can hand them back', async ({ browser }) => {
