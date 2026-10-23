@@ -148,7 +148,7 @@ async function openPdf(id, page) {
 
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/">Library</a></p></section>')); return; }
+  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
   const p = snap.data();
   const [ns, ls] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')), getDocs(collection(c.db, 'lists'))]);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
@@ -160,7 +160,7 @@ async function renderPaper(id, hitPage) {
     p.doi && `<a href="${NUS_PROXY}${encodeURIComponent('https://doi.org/' + p.doi)}" target="_blank" rel="noopener">Via NUS Libraries</a>`,
     p.pmid && `<a href="https://pubmed.ncbi.nlm.nih.gov/${c.esc(p.pmid)}/" target="_blank" rel="noopener">PubMed</a>`,
   ].filter(Boolean).join(' · ');
-  const page = c.el(`<section class="card"><p><a href="#/">← Library</a></p><h1>${c.esc(p.title)}</h1>
+  const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
     <p>${links}</p><p class="muted">${oaLine(p.oa)}</p>
     <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
@@ -270,7 +270,7 @@ async function renderPaper(id, hitPage) {
       if (!confirm('Delete this paper from the library?')) return;
       if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)); }
       await deleteDoc(doc(c.db, 'papers', id));
-      dirty(); location.hash = '#/';
+      dirty(); location.hash = '#/library';
     };
     $in(page, '#edit').append(ed);
   }

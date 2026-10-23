@@ -59,7 +59,7 @@ const noSideScroll = (page) => page.evaluate(() => document.documentElement.scro
 test('add by DOI, upload own PDF, search notes and PDF text, open at the page, reading list', async ({ page }) => {
   const files = await fakeApi(page);
   await signInAsMember(page, 'res1@example.org');
-  await page.goto('/?emulator#/');
+  await page.goto('/?emulator#/library');
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
 
@@ -120,7 +120,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByLabel('Name').fill('Research methods');
   await page.getByRole('button', { name: 'Create list' }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
-  await page.goto('/?emulator#/');
+  await page.goto('/?emulator#/library');
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
   await page.getByRole('button', { name: 'Add to list' }).click();
   await expect(page.getByRole('heading', { name: 'Research methods' })).toBeVisible();
