@@ -46,6 +46,14 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
   await expect(res.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
+  // A presenter name that matches no member warns before saving (they could not edit the summary or slides).
+  await res.getByRole('link', { name: /Edit the plan/ }).click();
+  await res.getByLabel('Presenter').fill('Dr Nobody');
+  await res.getByRole('button', { name: 'Save' }).click();
+  await expect(res.getByText(/Dr Nobody isn't linked to a member account/)).toBeVisible();
+  await res.goBack();
+  await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
+
   // The paper page shows the session; the library list shows the Presented badge.
   await res.goto('/?emulator#/paper/pb');
   await expect(res.locator('#jc').getByRole('link').first()).toBeVisible();
