@@ -1,12 +1,9 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, PROJECT, DOCS, BASE } from './emu.js';
 import { workerApi } from './worker-api.js';
 import { indexPages } from '../worker/search.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-const PROJECT = 'demo-scale';
-const DOCS = `http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
-const BASE = `projects/${PROJECT}/databases/(default)/documents`;
 const owner = { Authorization: 'Bearer owner' };
 const s = (v) => ({ stringValue: v });
 const at = (ms) => ({ timestampValue: new Date(ms).toISOString() });
@@ -54,7 +51,6 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   test.setTimeout(90000);
   // Its own emulator project, so other specs' papers (and their parallel runs) don't change the counts.
   const { db, calls } = await workerApi(page, PROJECT);
-  expect((await page.request.delete(`http://127.0.0.1:8080/emulator/v1/projects/${PROJECT}/databases/(default)/documents`)).ok()).toBeTruthy();
   // Papers first, membership last, so the app can't load (and cache) a half-seeded library.
   const uid = await signIn(page, 'scale@example.org');
   await seed(page, uid, db);
