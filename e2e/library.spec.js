@@ -81,6 +81,12 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByRole('link', { name: 'Why Most Published Research Findings Are False' })).toBeVisible();
   await page.getByLabel('Search the library').fill('statistics');
   await expect(page.getByText('1 found')).toBeVisible();
+  // Rows: a PDF pill opens the reader; a tag pill filters the library to that tag.
+  await expect(page.locator('#res li.paper .pdf-pill').first()).toHaveAttribute('href', /^#\/read\//);
+  await page.locator('#res li.paper a.tag', { hasText: /^statistics$/ }).click();
+  await expect(page.getByRole('button', { name: /Tag: statistics/ })).toBeVisible();
+  await expect(page.getByLabel('Search the library')).toHaveValue('');
+  await page.getByRole('button', { name: /Tag: statistics/ }).click();
   await page.getByLabel('Search the library').fill('rocuronium');
   expect(await noSideScroll(page)).toBe(true);
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
