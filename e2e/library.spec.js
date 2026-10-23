@@ -68,7 +68,6 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await page.getByLabel('DOI or PubMed ID').fill('https://doi.org/10.1371/journal.pmed.0020124');
   await page.getByRole('button', { name: 'Look up' }).click();
   await expect(page.getByRole('heading', { name: 'Why Most Published Research Findings Are False' })).toBeVisible();
-  await expect(page.getByText('Open access, licence cc-by')).toBeVisible();
   await page.getByLabel('Tags, comma separated').fill('Statistics, critical appraisal');
   await page.getByLabel('Why read it (one line)').fill('Classic on bias');
   expect(await noSideScroll(page)).toBe(true);
@@ -83,8 +82,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   await expect(page.getByText('Already in the library:')).toBeVisible();
   await page.getByRole('link', { name: 'Why Most Published Research Findings Are False' }).click();
 
-  // Upload as own material; PDF.js pulls out the text.
-  await page.getByLabel("My or the department's own material").check();
+  // Upload (no licence step); PDF.js pulls out the text.
   await page.getByLabel('PDF file').setInputFiles({ name: 'talk.pdf', mimeType: 'application/pdf', buffer: makePdf('Sugammadex reverses rocuronium quickly') });
   await page.getByRole('button', { name: 'Upload PDF' }).click();
   await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
@@ -128,16 +126,35 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
   expect(await noSideScroll(page)).toBe(true);
 });
 
-test('a closed paper cannot be stored as CC-licensed; PMID lookup works', async ({ page }) => {
-  await fakeApi(page);
+test('bulk import reads DOIs from the PDFs, names the rest from the file, skips repeats', async ({ page }) => {
+  const files = await fakeApi(page);
   await signInAsMember(page, 'res2@example.org');
-  await page.goto('/?emulator#/add');
+  await page.goto('/?emulator#/');
   await page.reload();
-  await page.getByLabel('DOI or PubMed ID').fill('PMID: 23992602');
-  await page.getByRole('button', { name: 'Look up' }).click();
-  await expect(page.getByRole('heading', { name: /Alogliptin after Acute Coronary Syndrome/ })).toBeVisible();
-  await expect(page.getByText(/no Creative Commons licence/)).toBeVisible();
-  await page.getByRole('button', { name: 'Save to library' }).click();
-  await expect(page.getByText('Creative Commons licence (none found for this paper)')).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Creative Commons licence/ })).toBeDisabled();
+  await page.getByRole('link', { name: 'Import PDFs' }).click();
+  const pdfs = [
+    { name: 'alogliptin.pdf', mimeType: 'application/pdf', buffer: makePdf('N Engl J Med 2013. doi: 10.1056/NEJMoa1305889.') },
+    { name: 'ward_round_handout.pdf', mimeType: 'application/pdf', buffer: makePdf('Ketamine dosing for the ward round') },
+  ];
+  await page.getByLabel('PDF files').setInputFiles(pdfs);
+  await page.getByLabel('Tags for all, comma separated').fill('imported');
+  await page.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByText('Done: 2 added, 0 already there, 0 failed.')).toBeVisible();
+  await expect(page.getByRole('link', { name: /Alogliptin after Acute Coronary Syndrome/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'ward round handout' })).toBeVisible();
+  expect(files.size).toBe(2);
+  expect(await noSideScroll(page)).toBe(true);
+
+  // Importing the same files again adds nothing.
+  await page.getByLabel('PDF files').setInputFiles(pdfs);
+  await page.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByText('Done: 0 added, 2 already there, 0 failed.')).toBeVisible();
+
+  // Both are searchable by their PDF text, with no licence wording anywhere.
+  await page.getByRole('link', { name: 'Search', exact: true }).click();
+  await page.getByLabel('Search the library').fill('ketamine');
+  await expect(page.getByRole('link', { name: 'ward round handout' })).toBeVisible();
+  await page.getByRole('link', { name: 'ward round handout' }).click();
+  await expect(page.getByRole('button', { name: 'Open PDF' })).toBeVisible();
+  await expect(page.getByText(/Creative Commons|licence/i)).toHaveCount(0);
 });

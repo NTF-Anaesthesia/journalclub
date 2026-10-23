@@ -53,35 +53,21 @@ test('lookup through the Worker', async () => {
   assert.equal((await r.json()).oa.license, 'cc-by');
 });
 
-test('upload of a closed paper as "CC licensed" is refused', async () => {
+test('any paper uploads with no licence check, and members read it back', async () => {
   const env = { FILES: bucket() };
-  const r = await api(req('/api/file/closed?basis=cc', 'mem1', { method: 'PUT', body: PDF }), env, W);
-  assert.equal(r.status, 403);
-  assert.match((await r.json()).error, /no Creative Commons licence/);
-  assert.equal(env.FILES.store.size, 0);
-});
-
-test('upload with no basis is refused', async () => {
-  const env = { FILES: bucket() };
-  const r = await api(req('/api/file/open', 'mem1', { method: 'PUT', body: PDF }), env, W);
-  assert.equal(r.status, 403);
-});
-
-test('CC-BY paper uploads, and members read it back', async () => {
-  const env = { FILES: bucket() };
-  const r = await api(req('/api/file/open?basis=cc', 'mem1', { method: 'PUT', body: PDF }), env, W);
+  const r = await api(req('/api/file/closed', 'mem1', { method: 'PUT', body: PDF }), env, W);
   assert.equal(r.status, 200);
-  assert.equal(env.FILES.meta.customMetadata.license, 'cc-by');
-  const g = await api(req('/api/file/open', 'mem2'), env, W);
+  assert.equal(env.FILES.meta.customMetadata.uploadedBy, 'mem1');
+  const g = await api(req('/api/file/closed', 'mem2'), env, W);
   assert.equal(g.status, 200);
   assert.equal(g.headers.get('Content-Type'), 'application/pdf');
-  assert.equal((await api(req('/api/file/open'), env, W)).status, 401);
+  assert.equal((await api(req('/api/file/closed'), env, W)).status, 401);
 });
 
-test('own material uploads; only the adder or an admin may upload or delete', async () => {
+test('only the adder or an admin may upload or delete', async () => {
   const env = { FILES: bucket() };
-  assert.equal((await api(req('/api/file/closed?basis=own', 'mem2', { method: 'PUT', body: PDF }), env, W)).status, 403);
-  assert.equal((await api(req('/api/file/closed?basis=own', 'mem1', { method: 'PUT', body: PDF }), env, W)).status, 200);
+  assert.equal((await api(req('/api/file/closed', 'mem2', { method: 'PUT', body: PDF }), env, W)).status, 403);
+  assert.equal((await api(req('/api/file/closed', 'mem1', { method: 'PUT', body: PDF }), env, W)).status, 200);
   assert.equal((await api(req('/api/file/closed', 'mem2', { method: 'DELETE' }), env, W)).status, 403);
   assert.equal((await api(req('/api/file/closed', 'adm', { method: 'DELETE' }), env, W)).status, 200);
   assert.equal(env.FILES.store.size, 0);
@@ -89,7 +75,7 @@ test('own material uploads; only the adder or an admin may upload or delete', as
 
 test('non-PDF bodies are refused', async () => {
   const env = { FILES: bucket() };
-  const r = await api(req('/api/file/closed?basis=own', 'mem1', { method: 'PUT', body: 'hello' }), env, W);
+  const r = await api(req('/api/file/closed', 'mem1', { method: 'PUT', body: 'hello' }), env, W);
   assert.equal(r.status, 415);
 });
 
