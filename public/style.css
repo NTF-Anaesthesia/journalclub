@@ -63,3 +63,10 @@ form.stack button { align-self:stretch; }
 #next { margin:0 0 var(--app-s4); }
 .next { margin:0; padding:var(--app-s4); border-radius:var(--app-r-lg); background:var(--app-wine); color:var(--app-ivory); font-size:var(--app-t-callout); }
 .next a { color:var(--app-ivory); } .next .muted { color:#eadbd6; }
+
+.qr svg { width:100%; height:auto; }
+.fed .list li { border-bottom:1px solid var(--app-line, #ddd); padding-bottom:var(--app-s2); }
+@media print {
+  #topbar, #tabbar, #bar, .no-print, .actions { display:none !important; }
+  body { background:#fff; }
+}

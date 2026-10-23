@@ -269,3 +269,64 @@ test('any member flags a paper as themselves; only admins read or dismiss flags'
   await assertSucceeds(getDocs(collection(as('admin1', 'a@x.org'), 'flags')));
   await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'flags/f1')));
 });
+
+test('discussion: presenter, member coordinator and admins fill it; only admins set coordinator, Teams link, template, lock', async () => {
+  const mk = (id) => env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'sessions', id), {
+    date: future(), paperId: 'p1', paperTitle: 'T', presenterUid: 'mem1', presenterName: 'M', summary: '', slides: '',
+    createdBy: 'admin1', createdAt: new Date() }));
+  await mk('s1');
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem3'), { email: 'm3@x.org', role: 'member', inviteId: 'seed' }));
+  const disc = { fields: [{ id: 'a', label: 'A', type: 'long' }], answers: { a: 'x' } };
+  const ref = (uid, email) => doc(as(uid, email), 'sessions/s1');
+  await assertSucceeds(updateDoc(ref('mem1', 'm@x.org'), { discussion: disc }));
+  // Not the presenter, not yet the coordinator.
+  await assertFails(updateDoc(ref('mem2', 'm2@x.org'), { discussion: disc }));
+  // Presenter can't pick the coordinator, Teams link, template or lock.
+  await assertFails(updateDoc(ref('mem1', 'm@x.org'), { coordinatorUid: 'mem1', coordinatorName: 'M' }));
+  await assertFails(updateDoc(ref('mem1', 'm@x.org'), { teamsUrl: 'https://teams.example/x' }));
+  await assertFails(updateDoc(ref('mem1', 'm@x.org'), { template: [] }));
+  await assertFails(updateDoc(ref('mem1', 'm@x.org'), { locked: true }));
+  await assertSucceeds(updateDoc(ref('admin1', 'a@x.org'), { coordinatorUid: 'mem2', coordinatorName: 'M2', teamsUrl: 'https://teams.example/x', time: '17:30' }));
+  await assertFails(updateDoc(ref('admin1', 'a@x.org'), { teamsUrl: 'javascript:alert(1)' }));
+  await assertFails(updateDoc(ref('admin1', 'a@x.org'), { time: '25:00' }));
+  // A member coordinator edits the discussion too; a typed-name coordinator (no uid) gives no one rights.
+  await assertSucceeds(updateDoc(ref('mem2', 'm2@x.org'), { discussion: { ...disc, answers: { a: 'y' } } }));
+  await assertFails(updateDoc(ref('mem3', 'm3@x.org'), { discussion: disc }));
+  await assertFails(updateDoc(ref('mem2', 'm2@x.org'), { discussion: { fields: [], answers: {}, extra: 1 } }));
+  // Locked: admins only.
+  await assertSucceeds(updateDoc(ref('admin1', 'a@x.org'), { locked: true }));
+  await assertFails(updateDoc(ref('mem1', 'm@x.org'), { discussion: disc }));
+  await assertFails(updateDoc(ref('mem2', 'm2@x.org'), { discussion: disc }));
+  await assertSucceeds(updateDoc(ref('admin1', 'a@x.org'), { discussion: disc }));
+});
+
+test('points: one per member per session, own only, closed when locked', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'sessions/s1'), {
+    date: future(), paperId: 'p1', paperTitle: 'T', presenterUid: 'mem1', presenterName: 'M', summary: '', slides: '',
+    createdBy: 'admin1', createdAt: new Date() }));
+  const pt = (uid, email, id = uid) => doc(as(uid, email), 'sessions/s1/points', id);
+  const body = { text: 'Use less opioid', name: 'M', updatedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(pt('mem1', 'm@x.org'), body));
+  await assertSucceeds(setDoc(pt('mem1', 'm@x.org'), { ...body, text: 'Edited' }));
+  await assertFails(setDoc(pt('mem1', 'm@x.org', 'other'), body));
+  await assertFails(setDoc(pt('mem1', 'm@x.org'), { ...body, text: '' }));
+  await assertFails(setDoc(pt('nobody', 'n@x.org'), body));
+  await assertSucceeds(getDocs(collectionGroup(as('admin1', 'a@x.org'), 'points')));
+  await assertFails(getDocs(collection(stranger(), 'sessions/s1/points')));
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), 'sessions/s1'), { locked: true }));
+  await assertFails(setDoc(pt('mem1', 'm@x.org'), { ...body, text: 'Late' }));
+});
+
+test('config: members read the Teams link; only admins write it', async () => {
+  const cfg = { teamsUrl: 'https://teams.example/m', pointPrompt: 'Your take-home point', time: '16:00', updatedBy: 'admin1', updatedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'config/club'), cfg));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'config/club'), { ...cfg, updatedBy: 'mem1' }));
+  await assertSucceeds(getDoc(doc(as('mem1', 'm@x.org'), 'config/club')));
+  await assertFails(getDoc(doc(stranger(), 'config/club')));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'config/club'), { ...cfg, teamsUrl: 'http://x' }));
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'config/discussion'),
+    { fields: [{ id: 'a', label: 'A', type: 'long' }], updatedBy: 'admin1', updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'config/discussion'), { fields: [], updatedBy: 'mem1', updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'config/other'), { updatedBy: 'admin1', updatedAt: serverTimestamp() }));
+});
