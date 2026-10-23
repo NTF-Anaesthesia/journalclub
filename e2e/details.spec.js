@@ -71,7 +71,7 @@ test('admin Fill missing details: old ATOTW gets the PDF summary, a journal PDF 
 
   // The old ATOTW: abstract from the PDF, labelled, plus journal and year.
   await page.goto(`/?emulator=${PROJECT}#/paper/a1`);
-  await expect(page.getByText('Anaesthesia Tutorial of the Week 2012')).toBeVisible();
+  await expect(page.getByText('Anaesthesia Tutorial of the Week · 2012')).toBeVisible();
   await page.getByText('Abstract', { exact: true }).click();
   await expect(page.getByText('Taken from the PDF’s own abstract or summary.')).toBeVisible();
   await expect(page.getByText('Sedation in the intensive care unit is given to relieve anxiety')).toBeVisible();

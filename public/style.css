@@ -136,3 +136,22 @@ body.selecting .snack { bottom:calc(84px + var(--app-safe-b)); }
   #topbar, #tabbar, #bar, .no-print, .actions, .selbar, .snack { display:none !important; }
   body { background:#fff; }
 }
+
+/* Session and paper pages: different eyebrows, a tinted session header, the abstract open under a compact header */
+.eyebrow { margin:0; font-size:var(--app-t-caption); letter-spacing:.08em; font-weight:600; color:var(--app-wine); }
+.back { margin:0 0 var(--app-s1); }
+.session-head { background:var(--app-inset); border-radius:var(--app-r-md, 12px); padding:var(--app-s3, 14px); margin:var(--app-s2) 0; }
+.session-head h1 { margin:0 0 var(--app-s1); }
+.session-head p { margin:2px 0; }
+.paper-card { border:1px solid var(--app-inset); border-radius:var(--app-r-md, 12px); padding:var(--app-s3, 14px); margin:var(--app-s2) 0; }
+.paper-card p { margin:4px 0; }
+.paperpage h1 { margin:var(--app-s1) 0; font-size:1.25rem; line-height:1.25; }
+.paperpage .meta, .paperpage .tagrow { margin:2px 0; }
+.paperpage .tagrow { display:flex; gap:var(--app-s1); overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+.paperpage .abstract-open h2 { margin:var(--app-s2) 0 var(--app-s1); font-size:1rem; }
+.paperpage .actions.compact { display:flex; flex-wrap:wrap; gap:var(--app-s2); margin:var(--app-s2) 0; }
+a.plain { color:inherit; text-decoration:none; }
+.card > .back a { text-decoration:none; font-weight:500; }
+.card > .eyebrow { padding:var(--app-s2) var(--app-s1) 0; }
+.session-head, .paper-card { margin-left:var(--app-s1); margin-right:var(--app-s1); }
+.abstract-open { padding:0 var(--app-s1); }

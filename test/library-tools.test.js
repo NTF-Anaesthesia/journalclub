@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CHIPS, matches, chipCounts, tagCounts, sortEntries, averageRatings, selectAll, triState, emptyFilter, filterOn } from '../src/filters.js';
+import { CHIPS, matches, chipCounts, tagCounts, sortEntries, discussedAt, averageRatings, selectAll, triState, emptyFilter, filterOn } from '../src/filters.js';
 import { vancouver, vancouverList, bibtex } from '../src/cite.js';
 import { findDuplicates, pickKeep, keepAllowed, mergePaper, mergeNotes, similarity, normTitle } from '../src/dupes.js';
 
@@ -28,6 +28,16 @@ test('chips filter and count over the whole catalogue', () => {
   assert.deepEqual(chipCounts(lib, x), { noAbstract: 1, noDoi: 1, noPdf: 1, notIndexed: 1, untagged: 1, starred: 1, presented: 1 });
   assert.equal(CHIPS.length, 7);
   assert.deepEqual(tagCounts(lib), [['airway', 2], ['green', 1]]);
+});
+
+test('recently discussed: latest past session first, planned ones ignored, rest newest added', () => {
+  const day = 86400000, now = Date.UTC(2026, 9, 23);
+  const L = [['a', { addedAt: { seconds: 1 }, presented: [{ sid: 's1', date: now - 30 * day }] }],
+    ['b', { addedAt: { seconds: 9 } }],
+    ['c', { addedAt: { seconds: 5 }, presented: [{ sid: 's2', date: now - 2 * day }, { sid: 's3', date: now + 7 * day }] }],
+    ['d', { addedAt: { seconds: 7 }, presented: [{ sid: 's4', date: { toMillis: () => now + day } }] }]];
+  assert.deepEqual(ids(sortEntries(L, 'discussed', { now })), ['c', 'a', 'b', 'd']);
+  assert.equal(discussedAt(L[2][1], now), now - 2 * day);
 });
 
 test('sort orders; missing values last', () => {

@@ -25,8 +25,11 @@ export function updateIndex(ms, id, p) {
 }
 
 // Results best first: { paperId, page, snippet }.
-export function searchPapers(ms, q) {
-  return ms.search(q).map((r) => ({ paperId: r.id, page: null, snippet: null }));
+// `at(id)` is when the paper was last discussed: it breaks ties between equally relevant hits (newest first).
+export function searchPapers(ms, q, at = () => 0) {
+  const key = (r) => Math.round(r.score * 1e6);
+  return ms.search(q).map((r, i) => ({ r, i })).sort((a, b) => key(b.r) - key(a.r) || at(b.r.id) - at(a.r.id) || a.i - b.i)
+    .map(({ r }) => ({ paperId: r.id, page: null, snippet: null }));
 }
 
 // Metadata hits first, in their order, taking the server's page and snippet when it found the paper too;

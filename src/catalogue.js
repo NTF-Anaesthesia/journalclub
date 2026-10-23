@@ -74,7 +74,7 @@ export const restore = (id, p) => { if (lib) { lib.papers.set(id, p); if (lib.bu
 const slim = ([id, p]) => [id, {
   title: p.title, journal: p.journal, year: p.year, tags: p.tags || [], authors: (p.authors || []).slice(0, 4),
   file: p.file ? { pages: p.file.pages } : null, abstract: p.abstract ? '1' : '', doi: p.doi || '',
-  presented: (p.presented || []).slice(-1).map((e) => ({ date: e.date?.toMillis ? e.date.toMillis() : e.date })),
+  presented: (p.presented || []).slice(-2).map((e) => ({ sid: e.sid, date: e.date?.toMillis ? e.date.toMillis() : e.date })),
 }];
 export function writeHead(entries) {
   try { localStorage.setItem(HEAD_KEY, JSON.stringify(entries.slice(0, 50).map(slim))); } catch { /* full or private */ }
