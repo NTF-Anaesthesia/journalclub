@@ -1,5 +1,6 @@
 // Journal club pages: home (next session), the Plan a session sheet, session pages.
 import qrcode from 'qrcode-generator';
+import { decodeEntities, cleanPaper } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, query, where, orderBy,
   limit, writeBatch, serverTimestamp, Timestamp,
@@ -58,7 +59,7 @@ async function renderHome() {
   const [next, club] = await Promise.all([nextSession(), loadClub()]);
   $in(page, '#next').replaceChildren(next
     ? c.el(`<p class="next"><a href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a><br>
-        ${c.esc(next.paperTitle)}<br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`)
+        ${c.esc(decodeEntities(next.paperTitle))}<br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`)
     : c.el('<p class="muted">No session planned yet.</p>'));
   const url = next && safeUrl(next.teamsUrl || club.teamsUrl);
   if (url && inJoinWindow(startMillis(next, club.time), Date.now())) {
@@ -77,7 +78,7 @@ async function renderSessions() {
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
-      <span>${c.esc(s.paperTitle)}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
+      <span>${c.esc(decodeEntities(s.paperTitle))}</span><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}</span></li>`);
     if (s.date.toMillis() >= today) up.append(li); else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
@@ -155,7 +156,8 @@ async function renderPlan(paperId, sid) {
     return;
   }
   const [ps, ss, club] = await Promise.all([getDocs(collection(c.db, 'papers')), getDocs(collection(c.db, 'sessions')), loadClub()]);
-  const papers = ps.docs.map((d) => ({ id: d.id, title: d.data().title, hay: `${d.data().title} ${(d.data().authors || []).join(' ')} ${d.data().year || ''}`.toLowerCase() }));
+  const papers = ps.docs.map((d) => cleanPaper({ id: d.id, ...d.data() }))
+    .map((p) => ({ id: p.id, title: p.title, hay: `${p.title} ${p.authors.join(' ')} ${p.year || ''}`.toLowerCase() }));
   // Names for the pickers: people on earlier sessions, plus the whole member list for admins (members can't list it).
   const people = new Map();
   const note = (name, uid) => { if (name && (uid || !people.has(name))) people.set(name, uid || ''); };
@@ -179,7 +181,7 @@ async function renderPlan(paperId, sid) {
   const form = $in(page, '#pf'); const msg = $in(form, '#smsg');
   const find = $in(form, '#spaper'); const pick = $in(form, '#spick');
 
-  let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: old.paperTitle } : null);
+  let paper = papers.find((p) => p.id === (old ? old.paperId : paperId)) || (old ? { id: old.paperId, title: decodeEntities(old.paperTitle) } : null);
   if (paper) find.value = paper.title;
   find.oninput = () => {
     const q = find.value.trim().toLowerCase();
@@ -200,7 +202,7 @@ async function renderPlan(paperId, sid) {
   date.value = old ? isoDay(old.date.toDate()) : usualDate(club);
   const clash = () => {
     const same = ss.docs.filter((d) => d.id !== sid && date.value && isoDay(d.data().date.toDate()) === date.value);
-    $in(form, '#sclash').textContent = same.length ? `Already planned that day: ${same.map((d) => d.data().paperTitle).join('; ')}` : '';
+    $in(form, '#sclash').textContent = same.length ? `Already planned that day: ${same.map((d) => decodeEntities(d.data().paperTitle)).join('; ')}` : '';
   };
   date.onchange = clash; clash();
   $in(form, '#spres').value = old ? old.presenterName : me;
@@ -258,7 +260,7 @@ async function renderSession(sid) {
   const mayFill = isAdmin() || (!s.locked && [s.createdBy, s.presenterUid, s.coordinatorUid].includes(me));
   const page = c.el(`<section class="card"><p><a href="#/sessions">← Sessions</a></p>
     <h1>${c.esc(fmtDate(s.date))}</h1>
-    <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(s.paperTitle)}</a></p>
+    <p><a href="#/paper/${c.esc(s.paperId)}">${c.esc(decodeEntities(s.paperTitle))}</a></p>
     <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
     ${s.coordinatorName ? `<p class="muted">Coordinator: ${c.esc(s.coordinatorName)}</p>` : ''}
     ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
@@ -365,7 +367,7 @@ async function renderPoint(sid) {
   const ref = doc(c.db, 'sessions', sid, 'points', c.user.uid);
   const mine = await getDoc(ref);
   const page = c.el(`<section class="card"><p><a href="#/session/${c.esc(sid)}">← Session</a></p><h1>${c.esc(club.pointPrompt)}</h1>
-    <p class="muted">${c.esc(s.paperTitle)}</p>
+    <p class="muted">${c.esc(decodeEntities(s.paperTitle))}</p>
     ${s.locked ? '<p class="muted">This session is locked.</p>' : `<form class="stack"><label>${c.esc(club.pointPrompt)}
       <textarea id="ptext" rows="4" maxlength="500" required></textarea></label>
       <button class="primary">Save</button><p class="muted" id="pmsg"></p></form>`}</section>`);

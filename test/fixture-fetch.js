@@ -18,6 +18,7 @@ export function fixtureFetch(seen = []) {
       if (u.includes('esearch.fcgi') && u.includes(doi)) body = fx(`esearch-${k}.json`);
       if (u.includes('efetch.fcgi') && u.endsWith('id=' + pmid)) body = fx(`pubmed-${pmid}.xml`);
     }
+    if (u.startsWith('https://api.crossref.org/works/10.28923/atotw.551')) body = fx('crossref-10_28923_atotw_551.json');
     return body === null ? new Response('not found', { status: 404 }) : new Response(body, { status: 200 });
   };
 }
