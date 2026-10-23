@@ -1,0 +1,12 @@
+{
+  "name": "drive-import",
+  "private": true,
+  "type": "module",
+  "description": "Bulk import of a folder of PDFs into the journal club library (run by an admin on their own computer).",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}
