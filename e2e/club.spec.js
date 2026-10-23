@@ -49,7 +49,7 @@ test('a member plans a session from a paper page; the paper and the list show it
   // A presenter name that matches no member warns before saving (they could not edit the summary or slides).
   await res.getByRole('link', { name: 'Edit session' }).click();
   await res.getByLabel('Presenter').fill('Dr Nobody');
-  await res.locator('#pf').getByRole('button', { name: 'Save' }).click();
+  await res.locator('#saveall').click();
   await expect(res.getByText(/Dr Nobody isn't linked to a member account/)).toBeVisible();
   await res.goBack();
   await expect(res.getByText('Presenter: Ada Resident')).toBeVisible();
@@ -69,12 +69,20 @@ test('a member plans a session from a paper page; the paper and the list show it
   await res.locator('#next a').click();
   const sid = res.url().split('/session/')[1];
   await expect(res.getByLabel('Summary')).toHaveCount(0);
-  await expect(res.getByRole('button', { name: 'Save discussion' })).toHaveCount(0);
+  await expect(res.locator('#saveall')).toHaveCount(0);
   await res.getByRole('link', { name: 'Edit session' }).click();
   await expect(res.getByRole('heading', { name: 'Edit session' })).toBeVisible();
   await res.getByLabel('Summary').fill('Reversal choice and PPCs: no difference in the primary outcome.');
-  await res.getByRole('button', { name: 'Save summary' }).click();
-  await expect(res.locator('#emsg')).toHaveText('Saved.');
+  await expect(res.locator('#pfmsg')).toHaveText('Unsaved changes');
+  // Leaving with unsaved changes asks first; saying no keeps the page.
+  res.once('dialog', (d) => d.dismiss());
+  await res.locator('#savebar').getByRole('link', { name: 'Done' }).click();
+  await expect(res.getByRole('heading', { name: 'Edit session' })).toBeVisible();
+  // One Save (pinned above the tab bar) saves every section: no per-section save buttons.
+  await expect(res.getByRole('button', { name: /^Save/ })).toHaveCount(1);
+  await expect(res.locator('#saveall')).toBeInViewport();
+  await res.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(res.locator('#pfmsg')).toHaveText('Saved.');
 
   // Slides: a PowerPoint upload (the Worker is faked here) shows Open PDF and Download PowerPoint.
   const sent = [];
@@ -143,7 +151,7 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   // Admin sets the coordinator on the session's Edit page.
   await admin.goto('/?emulator#/plan/-/disc1');
   await admin.getByLabel('Coordinator').fill('Dr Consultant');
-  await admin.locator('#pf').getByRole('button', { name: 'Save' }).click();
+  await admin.locator('#saveall').click();
   await expect(admin.locator('#pfmsg')).toHaveText('Saved.');
   await admin.getByRole('link', { name: 'Done' }).click();
   await expect(admin.getByText('Coordinator: Dr Consultant')).toBeVisible();
@@ -155,8 +163,8 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   await pres.getByLabel('Take-home points').fill('Fewer delirium days\nMore bradycardia');
   await pres.getByLabel('Would this change our practice?').selectOption('Maybe');
   await pres.getByLabel('Local relevance').fill('Ward patients only');
-  await pres.getByRole('button', { name: 'Save discussion' }).click();
-  await expect(pres.locator('#dmsg')).toHaveText('Saved.');
+  await pres.locator('#saveall').click();
+  await expect(pres.locator('#pfmsg')).toHaveText('Saved.');
   await pres.getByRole('link', { name: 'Done' }).click();
   await expect(pres.getByRole('heading', { name: 'Local relevance' })).toBeVisible();
   await expect(pres.getByText('Ward patients only').first()).toBeVisible();
@@ -170,7 +178,7 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   await mem.goto('/?emulator#/session/disc1');
   await expect(mem.getByText('Watch the heart rate')).toBeVisible();
   // Members can't edit the discussion or set the coordinator.
-  await expect(mem.getByRole('button', { name: 'Save discussion' })).toHaveCount(0);
+  await expect(mem.locator('#saveall')).toHaveCount(0);
   await expect(mem.getByLabel('Coordinator')).toHaveCount(0);
 
   // The CSV export has the filled session.

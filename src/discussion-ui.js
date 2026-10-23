@@ -46,10 +46,10 @@ export function fieldEditor(c, fields, onSave, saveLabel = 'Save form') {
   return form;
 }
 
-// The form people fill in: one input per field. onSave gets the answers map.
-export function discussionForm(c, fields, answers, onSave) {
+// The form people fill in: one input per field. form.read() gives { answers, missing } for the page to save.
+export function discussionForm(c, fields, answers) {
   const a = answers || {};
-  const form = c.el('<form class="stack dform"><h2>Discussion</h2><div id="dfields" class="stack"></div><button class="primary">Save discussion</button><p class="muted" id="dmsg"></p></form>');
+  const form = c.el('<form class="stack dform"><h2>Discussion</h2><div id="dfields" class="stack"></div></form>');
   const host = form.querySelector('#dfields');
   fields.forEach((f) => {
     const id = `d-${f.id}`;
@@ -67,8 +67,7 @@ export function discussionForm(c, fields, answers, onSave) {
     else set(`#${CSS.escape(id)}`, a[f.id]);
     if (f.note) set(`#${CSS.escape(id + '~note')}`, a[`${f.id}~note`]);
   });
-  form.onsubmit = async (e) => {
-    e.preventDefault();
+  form.read = () => {
     const out = {};
     for (const f of fields) {
       const v = form.querySelector(`#${CSS.escape(`d-${f.id}`)}`).value.trim();
@@ -76,10 +75,7 @@ export function discussionForm(c, fields, answers, onSave) {
       else out[f.id] = v;
       if (f.note) out[`${f.id}~note`] = form.querySelector(`#${CSS.escape(`d-${f.id}~note`)}`).value.trim();
     }
-    const msg = form.querySelector('#dmsg');
-    const missing = missingRequired(fields, out);
-    if (missing.length) { msg.textContent = `Please fill in: ${missing.join(', ')}`; return; }
-    try { await onSave(out); msg.textContent = 'Saved.'; } catch { msg.textContent = 'Could not save.'; }
+    return { answers: out, missing: missingRequired(fields, out) };
   };
   return form;
 }
