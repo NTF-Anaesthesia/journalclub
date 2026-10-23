@@ -10,6 +10,15 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role == 'admin';
     }
 
+    // A single-use invite is consumed in the same batch; a group invite stays open until it expires or an admin deletes it.
+    function inviteRedeemable(token, uid) {
+      let inv = get(/databases/$(database)/documents/invites/$(token)).data;
+      return inv.get('group', false) == true
+        ? inv.expiresAt > request.time
+        : (inv.used == false
+           && getAfter(/databases/$(database)/documents/invites/$(token)).data.usedBy == uid);
+    }
+
     // Allow-list. A person reads their own row; admins read and change every row.
     // Joining is only possible by redeeming an unused, unexpired invite in the same batch.
     match /members/{uid} {
@@ -21,8 +30,7 @@ service cloud.firestore {
         && request.resource.data.role == 'member'
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.joinedAt == request.time
-        && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.usedBy == uid
-        && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.used == false;
+        && inviteRedeemable(request.resource.data.inviteId, uid);
       allow update: if isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'name']);
       allow delete: if isAdmin() && request.auth.uid != uid;
@@ -34,7 +42,8 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list: if isAdmin();
       allow create: if isAdmin()
-        && request.resource.data.keys().hasOnly(['createdBy', 'createdAt', 'expiresAt', 'used', 'note'])
+        && request.resource.data.keys().hasOnly(['createdBy', 'createdAt', 'expiresAt', 'used', 'note', 'group'])
+        && (!('group' in request.resource.data) || request.resource.data.group is bool)
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.createdAt == request.time
         && request.resource.data.used == false
@@ -42,6 +51,7 @@ service cloud.firestore {
         && request.resource.data.expiresAt > request.time
         && request.resource.data.expiresAt <= request.time + duration.value(30, 'd');
       allow update: if signedIn()
+        && resource.data.get('group', false) == false
         && resource.data.used == false
         && resource.data.expiresAt > request.time
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt'])
@@ -189,6 +199,22 @@ service cloud.firestore {
       }
     }
     match /{path=**}/points/{uid} { allow read: if isMember(); }
+
+    // Removal flags: any member asks, admins review (Remove opens the removal page, Dismiss deletes the flag).
+    match /flags/{fid} {
+      allow read: if isAdmin();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['paperId', 'paperTitle', 'what', 'reason', 'by', 'byName', 'at'])
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.what in ['pdf', 'paper']
+        && request.resource.data.paperId is string && request.resource.data.paperTitle is string
+        && request.resource.data.byName is string
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0 && request.resource.data.reason.size() <= 500
+        && exists(/databases/$(database)/documents/papers/$(request.resource.data.paperId));
+      allow delete: if isAdmin();
+    }
 
     match /{document=**} { allow read, write: if false; }
   }
