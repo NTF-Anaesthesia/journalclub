@@ -1,4 +1,4 @@
-/* Journal Club on the NTF Anaesthesia app kit (https://anantf.com/assets/app/app.css). The shell (bar, tab bar,
+/* Journal Club on the NTF Anaesthesia app kit (https://design.anantf.com/v1/app.css). The shell (bar, tab bar,
    main) uses kit classes in index.html; the pages' own markup is mapped onto the kit's look here. Light only. */
 :root { --muted:var(--app-muted); --line:var(--app-line); --accent:var(--app-wine); }
 .app-main { max-width:680px; margin:0 auto; }
