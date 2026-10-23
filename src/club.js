@@ -139,7 +139,7 @@ async function setPresented(b, paperId, sid, date) {
   const list = (snap.data().presented || []).filter((e) => e.sid !== sid);
   if (date) list.push({ sid, date });
   list.sort((x, y) => x.date.toMillis() - y.date.toMillis());
-  b.update(ref, { presented: list });
+  b.update(ref, { presented: list, changedAt: serverTimestamp() }); // changedAt: the library's catalogue picks it up
 }
 
 const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

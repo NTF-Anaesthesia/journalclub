@@ -1,5 +1,5 @@
 // Admin-only "Refresh abstracts": look every paper up again and rewrite the bibliographic fields that changed.
-import { doc, getDocs, collection, updateDoc } from 'firebase/firestore';
+import { doc, getDocs, collection, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { atotwDoi } from './doi.js';
 
 const FIELDS = ['title', 'journal', 'authors', 'abstract'];
@@ -42,7 +42,7 @@ export function mountRefresh(page, ctx, onDone) {
         const r = await fetch('/api/lookup?id=' + encodeURIComponent(id), { headers: { Authorization: `Bearer ${token}` } });
         if (!r.ok) { counts.none++; continue; }
         const changes = refreshChanges(p, await r.json());
-        if (Object.keys(changes).length) { await updateDoc(doc(db, 'papers', d.id), changes); counts.updated++; } else counts.unchanged++;
+        if (Object.keys(changes).length) { await updateDoc(doc(db, 'papers', d.id), { ...changes, changedAt: serverTimestamp() }); counts.updated++; } else counts.unchanged++;
       }
       msg.textContent = `Done: ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.none} with no identifier or not found.`;
     } catch (err) {

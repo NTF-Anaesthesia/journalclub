@@ -1,19 +1,22 @@
 // Library pages: search, add by DOI or PubMed ID, bulk PDF import, paper page (notes, ratings, PDF), reading lists.
 import {
-  doc, getDoc, getDocs, collection, collectionGroup, setDoc, addDoc, deleteDoc, updateDoc, query, where,
-  serverTimestamp, arrayUnion, arrayRemove,
+  doc, getDoc, getDocs, getDocsFromCache, getCountFromServer, collection, setDoc, addDoc, deleteDoc, updateDoc,
+  query, where, orderBy, limit, serverTimestamp, arrayUnion, arrayRemove, Timestamp,
 } from 'firebase/firestore';
-import { buildIndex, searchPapers } from './search.js';
+import { buildIndex, updateIndex, searchPapers, mergeHits } from './search.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { abstractSections, cleanPaper } from './abstract.js';
 import { mountRefresh } from './refresh.js';
 
-export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
+export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list', 'reindex'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
-let lib = null;     // cached { papers, notes, texts, index }
+let lib = null;     // { papers, index, stale }: the catalogue (paper metadata only) and its search index
 let lastQuery = '';
+let shown = 0;      // papers shown in the newest-first list, 50 more per "Show more"
+const PAGE = 50;
+const SYNC_KEY = 'jc.catalogueSync';
 
 const $in = (root, sel) => root.querySelector(sel);
 const mayEdit = (p) => c.member.role === 'admin' || p.addedBy === c.user.uid;
@@ -25,19 +28,59 @@ async function apiFetch(path, init = {}) {
   return fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
 }
 
+// The catalogue lives in Firestore's persistent cache. A repeat open reads the cache, then only the papers
+// whose changedAt is newer than the newest one seen, plus one count; a count that doesn't match (a paper
+// removed elsewhere) falls back to a full read. Stats for tests: window.__jcCatalogue.
+const readSync = () => { try { const v = JSON.parse(localStorage.getItem(SYNC_KEY)); return v && new Timestamp(v.s, v.n); } catch { return null; } };
+const writeSync = (t) => { try { localStorage.setItem(SYNC_KEY, JSON.stringify({ s: t.seconds, n: t.nanoseconds })); } catch { /* private mode */ } };
+const newest = (papers, since) => {
+  let t = since;
+  for (const p of papers.values()) if (p.changedAt?.toMillis && (!t || p.changedAt > t)) t = p.changedAt;
+  return t;
+};
+
 async function loadLibrary() {
-  if (lib) return lib;
-  const [ps, ns, ts] = await Promise.all([
-    getDocs(collection(c.db, 'papers')), getDocs(collectionGroup(c.db, 'notes')), getDocs(collection(c.db, 'texts')),
-  ]);
-  const papers = new Map(ps.docs.map((d) => [d.id, cleanPaper(d.data())]));
-  const notes = new Map();
-  ns.forEach((d) => { const pid = d.ref.parent.parent.id; notes.set(pid, [...(notes.get(pid) || []), d.data()]); });
-  const texts = new Map(ts.docs.map((d) => [d.id, d.data().pages || []]));
-  lib = { papers, notes, texts, index: buildIndex(papers, notes, texts) };
+  if (lib && !lib.stale) return lib;
+  const col = collection(c.db, 'papers');
+  let since = readSync();
+  let papers = lib?.papers || null, fetched = 0, mode = 'delta';
+  if (!papers && since) {
+    try {
+      const cached = await getDocsFromCache(col);
+      if (!cached.empty) papers = new Map(cached.docs.map((d) => [d.id, cleanPaper(d.data())]));
+    } catch { /* no cache */ }
+  }
+  if (papers && since) {
+    const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))), getCountFromServer(col)]);
+    delta.docs.forEach((d) => { papers.set(d.id, cleanPaper(d.data())); if (lib?.built) updateIndex(lib.built, d.id, papers.get(d.id)); });
+    fetched = delta.size;
+    if (papers.size !== count.data().count) papers = null;
+  }
+  if (!papers || !since) {
+    const all = await getDocs(col);
+    papers = new Map(all.docs.map((d) => [d.id, cleanPaper(d.data())]));
+    fetched = all.size; mode = 'full'; since = null;
+  }
+  const t = newest(papers, since);
+  if (t) writeSync(t);
+  const keep = mode === 'delta' && lib?.built;
+  lib = { papers, built: keep ? lib.built : null, stale: false,
+    get index() { return (this.built = this.built || buildIndex(this.papers)); } }; // built on first search
+  if (typeof window !== 'undefined') window.__jcCatalogue = { mode, fetched, size: papers.size };
   return lib;
 }
-export const dirty = () => { lib = null; };
+export const dirty = () => { if (lib) lib.stale = true; };
+// A paper removed here, or found missing: drop it now rather than re-reading the catalogue.
+const forget = (id) => { if (lib) { lib.papers.delete(id); if (lib.built) updateIndex(lib.built, id, null); } };
+
+// PDF text and notes are searched by the Worker. Errors (offline, search not set up) leave metadata hits only.
+async function serverSearch(q) {
+  try {
+    const r = await apiFetch('/api/search?q=' + encodeURIComponent(q));
+    return r.ok ? (await r.json()).hits || [] : [];
+  } catch { return []; }
+}
+const snippetHtml = (s) => c.esc(s).replace(/\u0002/g, '<mark>').replace(/\u0003/g, '</mark>');
 
 export function renderLibraryRoute(r, ctx) {
   c = ctx;
@@ -47,18 +90,20 @@ export function renderLibraryRoute(r, ctx) {
   if (r.name === 'remove' && r.arg) return renderRemove(r.arg);
   if (r.name === 'lists') return renderLists();
   if (r.name === 'list' && r.arg) return renderList(r.arg);
+  if (r.name === 'reindex') return renderReindex();
   return renderSearch();
 }
 
-function paperItem(id, p, page) {
+function paperItem(id, p, page, snippet) {
   const meta = [p.journal, p.year].filter(Boolean).join(' ');
   const tags = (p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ');
-  const hit = page ? ` <span class="hit">p. ${page}</span>` : '';
+  const hit = page ? ` <span class="hit">p. ${page}</span>` : page === 0 ? ' <span class="hit">in notes</span>' : '';
   const pdf = p.file ? ' <span class="muted">PDF</span>' : '';
+  const snip = snippet ? `<span class="snippet muted">${snippetHtml(snippet)}</span>` : '';
   const last = (p.presented || []).at(-1);
   const badge = last ? ` <span class="badge">Presented ${c.esc(last.date.toDate().toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))}</span>` : '';
   return c.el(`<li class="paper"><a href="#/paper/${id}${page ? '/' + page : ''}">${c.esc(p.title)}</a>
-    <span class="muted">${c.esc(meta)}${pdf}${hit}</span><span>${badge}${tags}</span></li>`);
+    <span class="muted">${c.esc(meta)}${pdf}${hit}</span>${snip}<span>${badge}${tags}</span></li>`);
 }
 
 async function renderSearch() {
@@ -66,26 +111,50 @@ async function renderSearch() {
     <form id="sf" role="search" class="row"><input id="q" type="search" aria-label="Search the library"
       placeholder="Search titles, tags, notes and PDFs" autocomplete="off"></form>
     <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a> <a href="#/lists">Reading lists</a></p>
-    <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul></section>`);
+    <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul>
+    <p><button id="more" class="link" hidden>Show more</button></p></section>`);
   c.view.replaceChildren(page);
   if (c.member.role === 'admin') mountRefresh(page, c, dirty);
-  const q = $in(page, '#q');
+  const q = $in(page, '#q'), res = $in(page, '#res'), more = $in(page, '#more'), count = $in(page, '#count');
   q.value = lastQuery;
-  const { papers, index } = await loadLibrary();
+  // First open on this device (nothing cached): show the newest papers from a small query while the catalogue loads.
+  if (!lib && !readSync() && !lastQuery) {
+    const head = await getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))).catch(() => null);
+    if (head && !lib) {
+      res.replaceChildren(...head.docs.map((d) => paperItem(d.id, d.data())));
+      count.textContent = 'Loading the library…';
+    }
+  }
+  const cat = await loadLibrary();
+  if (!page.isConnected) return;
+  const { papers } = cat;
+  let all = null, timer = 0, seq = 0;
+  const showList = () => {
+    all = all || [...papers].sort((a, b) => (b[1].addedAt?.seconds || 0) - (a[1].addedAt?.seconds || 0));
+    const from = res.children.length;
+    all.slice(from, shown).forEach(([id, p]) => res.append(paperItem(id, p)));
+    more.hidden = shown >= all.length;
+    count.textContent = all.length ? `${all.length} papers, newest first` : 'No papers yet. Add the first one.';
+  };
+  const showHits = (hits, done) => {
+    res.replaceChildren(...hits.map((h) => paperItem(h.paperId, papers.get(h.paperId), h.page, h.snippet)));
+    count.textContent = hits.length ? `${hits.length} found${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…';
+  };
   const show = () => {
     lastQuery = q.value.trim();
-    const res = $in(page, '#res');
-    res.replaceChildren();
-    if (!lastQuery) {
-      const all = [...papers].sort((a, b) => (b[1].addedAt?.seconds || 0) - (a[1].addedAt?.seconds || 0));
-      all.forEach(([id, p]) => res.append(paperItem(id, p)));
-      $in(page, '#count').textContent = all.length ? `${all.length} papers, newest first` : 'No papers yet. Add the first one.';
-      return;
-    }
-    const hits = searchPapers(index, lastQuery).filter((h) => papers.has(h.paperId));
-    hits.forEach((h) => res.append(paperItem(h.paperId, papers.get(h.paperId), h.page)));
-    $in(page, '#count').textContent = hits.length ? `${hits.length} found` : 'Nothing found.';
+    const mine = ++seq;
+    clearTimeout(timer);
+    more.hidden = true;
+    if (!lastQuery) { res.replaceChildren(); shown = Math.max(shown, PAGE); showList(); return; }
+    const local = searchPapers(cat.index, lastQuery).filter((h) => papers.has(h.paperId));
+    if (lastQuery.length < 3) { showHits(local, true); return; }
+    showHits(local, false);
+    timer = setTimeout(async () => {
+      const server = await serverSearch(lastQuery);
+      if (mine === seq) showHits(mergeHits(local, server, (id) => papers.has(id)), true);
+    }, 250);
   };
+  more.onclick = () => { shown += PAGE; showList(); };
   q.oninput = show;
   $in(page, '#sf').onsubmit = (e) => { e.preventDefault(); q.blur(); };
   show();
@@ -137,16 +206,18 @@ function addPaper(p, tags, why = '') {
     doi: p.doi || '', pmid: p.pmid || '', title: p.title, authors: (p.authors || []).slice(0, 50),
     journal: p.journal || '', year: p.year || null, abstract: (p.abstract || '').slice(0, 20000),
     oa: { status: p.oa?.status || 'unknown', license: p.oa?.license || null, url: p.oa?.url || null },
-    tags, why, addedBy: c.user.uid, addedAt: serverTimestamp(),
+    tags, why, addedBy: c.user.uid, addedAt: serverTimestamp(), changedAt: serverTimestamp(),
   });
 }
 
-// Stores the PDF and its per-page text for search. Returns null on success, else the reason.
+// Stores the PDF, then its per-page text in the Worker's search index. Returns null on success, else the reason.
 async function storePdf(id, buf, pages) {
   const r = await apiFetch(`/api/file/${id}`, { method: 'PUT', body: buf, headers: { 'Content-Type': 'application/pdf' } });
   if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Upload refused.';
-  await setDoc(doc(c.db, 'texts', id), { pages });
-  await updateDoc(doc(c.db, 'papers', id), { file: { pages: pages.length, size: buf.byteLength } });
+  const ix = await apiFetch(`/api/index/${id}`, { method: 'PUT', body: JSON.stringify({ pages }), headers: { 'Content-Type': 'application/json' } })
+    .catch(() => null);
+  if (!ix?.ok) console.warn('PDF stored, but its text was not indexed for search');
+  await updateDoc(doc(c.db, 'papers', id), { file: { pages: pages.length, size: buf.byteLength }, changedAt: serverTimestamp() });
   return null;
 }
 
@@ -229,7 +300,7 @@ async function openPdf(id, page) {
 
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
+  if (!snap.exists()) { forget(id); c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
   const p = cleanPaper(snap.data());
   const [ns, ls] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')), getDocs(collection(c.db, 'lists'))]);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
@@ -301,7 +372,8 @@ async function renderPaper(id, hitPage) {
       text: $in(page, '#note').value.trim(), rating: Number($in(page, '#rating').value),
       name: c.member.name || c.user.displayName || c.user.email, updatedAt: serverTimestamp(),
     });
-    dirty(); renderPaper(id, hitPage);
+    apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // notes are searched server-side
+    renderPaper(id, hitPage);
   };
 
   // Journal club: sessions this paper was presented at, with members' take-home points, and a way to plan one.
@@ -348,7 +420,7 @@ async function renderPaper(id, hitPage) {
     $in(ed, '#ewhy').value = p.why || '';
     $in(ed, '#ef').onsubmit = async (e) => {
       e.preventDefault();
-      await updateDoc(doc(c.db, 'papers', id), { tags: tagList($in(ed, '#etags').value), why: $in(ed, '#ewhy').value.trim() });
+      await updateDoc(doc(c.db, 'papers', id), { tags: tagList($in(ed, '#etags').value), why: $in(ed, '#ewhy').value.trim(), changedAt: serverTimestamp() });
       dirty(); renderPaper(id, hitPage);
     };
     $in(page, '#edit').append(ed);
@@ -400,9 +472,9 @@ async function renderRemove(id) {
     $in(page, '#rpdf').onclick = async () => {
       if (!confirm('Remove the stored PDF?')) return;
       try {
-        await apiFetch(`/api/file/${id}`, { method: 'DELETE' });
-        await deleteDoc(doc(c.db, 'texts', id));
-        await updateDoc(doc(c.db, 'papers', id), { file: null });
+        await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); // also drops its pages from search
+        await deleteDoc(doc(c.db, 'texts', id)).catch(() => {}); // pre-D1 copy, if any
+        await updateDoc(doc(c.db, 'papers', id), { file: null, changedAt: serverTimestamp() });
         await clearFlags();
         dirty(); location.hash = `#/paper/${id}`;
       } catch { msg.textContent = 'Could not remove the PDF.'; }
@@ -412,10 +484,11 @@ async function renderRemove(id) {
     e.preventDefault();
     if (norm($in(page, '#rtitle').value) !== norm(p.title)) return;
     try {
-      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)); }
+      if (p.file) { await apiFetch(`/api/file/${id}`, { method: 'DELETE' }); await deleteDoc(doc(c.db, 'texts', id)).catch(() => {}); }
+      await apiFetch(`/api/index/${id}`, { method: 'DELETE' }).catch(() => {});
       await deleteDoc(doc(c.db, 'papers', id));
       await clearFlags().catch(() => {});
-      dirty(); location.hash = '#/library';
+      forget(id); location.hash = '#/library';
     } catch { msg.textContent = 'Could not remove the paper.'; }
   };
 }
@@ -464,5 +537,32 @@ async function renderList(lid) {
   if (edit) $in(page, '#dl').onclick = async () => {
     if (!confirm('Delete this list? The papers stay in the library.')) return;
     await deleteDoc(snap.ref); location.hash = '#/lists';
+  };
+}
+
+// Admin, once after the move to server search: copies the old texts/<paper> pages into the Worker's index
+// and indexes every paper's notes. Safe to run again.
+async function renderReindex() {
+  const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Rebuild PDF search</h1>
+    <p class="muted">Copies stored PDF text and notes into the search index. Safe to run more than once.</p>
+    <button id="go" class="primary">Rebuild</button><p id="rmsg" class="muted"></p></section>`);
+  c.view.replaceChildren(page);
+  const msg = $in(page, '#rmsg'), go = $in(page, '#go');
+  if (c.member.role !== 'admin') { go.remove(); msg.textContent = 'Admins only.'; return; }
+  go.onclick = async () => {
+    go.disabled = true;
+    let body = {}, done = { texts: 0, notes: 0 };
+    try {
+      while (body) {
+        const r = await apiFetch('/api/backfill', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+        const out = await r.json();
+        if (!r.ok) throw new Error(out.error || r.status);
+        done[out.phase] += out.indexed;
+        msg.textContent = `Working… ${done.texts} PDFs and ${done.notes} papers' notes so far.`;
+        body = out.next;
+      }
+      msg.textContent = `Done: ${done.texts} PDFs and ${done.notes} papers' notes indexed.`;
+    } catch (e) { msg.textContent = `Stopped: ${e.message}. Run it again to carry on.`; }
+    go.disabled = false;
   };
 }

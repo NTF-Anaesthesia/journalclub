@@ -66,29 +66,39 @@ service cloud.firestore {
     function paper(pid) { return get(/databases/$(database)/documents/papers/$(pid)).data; }
     function mayEditPaper(pid) { return isAdmin() || (isMember() && paper(pid).addedBy == request.auth.uid); }
 
+    // changedAt (the library's catalogue sync stamp), when an update sets it, must be the server time.
+    function changedAtNowIfSet() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['changedAt'])
+        || request.resource.data.changedAt == request.time;
+    }
+
     match /papers/{pid} {
       allow read: if isMember();
       allow create: if isMember()
         && request.resource.data.keys().hasOnly(['doi', 'pmid', 'title', 'authors', 'journal', 'year', 'abstract',
-             'oa', 'tags', 'why', 'addedBy', 'addedAt'])
+             'oa', 'tags', 'why', 'addedBy', 'addedAt', 'changedAt'])
         && request.resource.data.addedBy == request.auth.uid
         && request.resource.data.addedAt == request.time
+        && request.resource.data.get('changedAt', request.time) == request.time
         && request.resource.data.title is string && request.resource.data.title.size() > 0
         && request.resource.data.tags is list && request.resource.data.tags.size() <= 20;
       allow update: if (mayEditPaper(pid)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file'])
-        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tags', 'why', 'file', 'changedAt'])
+        && request.resource.data.tags is list && request.resource.data.tags.size() <= 20
+        && changedAtNowIfSet())
         // An admin's "Refresh abstracts" rewrites bibliographic fields (doi/pmid only where the paper had none).
         || (isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'authors', 'abstract', 'doi', 'pmid'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'journal', 'authors', 'abstract', 'doi', 'pmid', 'changedAt'])
         && request.resource.data.title is string && request.resource.data.title.size() > 0
         && request.resource.data.authors is list
         && (!('doi' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('doi', '') == '')
-        && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == ''))
+        && (!('pmid' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.get('pmid', '') == '')
+        && changedAtNowIfSet())
         // Any member planning a session keeps the paper's `presented` summary in step (written in the session's batch).
         || (isMember()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presented'])
-        && request.resource.data.presented is list && request.resource.data.presented.size() <= 100);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presented', 'changedAt'])
+        && request.resource.data.presented is list && request.resource.data.presented.size() <= 100
+        && changedAtNowIfSet());
       allow delete: if mayEditPaper(pid);
 
       // One note and rating per member per paper.
@@ -104,11 +114,10 @@ service cloud.firestore {
     }
     match /{path=**}/notes/{uid} { allow read: if isMember(); }
 
-    // PDF text per page, written at upload by whoever may edit the paper.
+    // Old per-page PDF text, from before search moved to the Worker (D1). Read by the admin backfill; no new writes.
     match /texts/{pid} {
       allow read: if isMember();
-      allow write: if mayEditPaper(pid)
-        && (request.method == 'delete' || (request.resource.data.keys().hasOnly(['pages']) && request.resource.data.pages is list));
+      allow delete: if mayEditPaper(pid);
     }
 
     // Reading lists: any member makes one; its maker or an admin edits it.

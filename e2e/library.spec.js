@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { lookup } from '../worker/lookup.js';
-import { fixtureFetch } from '../test/fixture-fetch.js';
+import { workerApi } from './worker-api.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -34,30 +33,10 @@ async function signInAsMember(page, email) {
   return uid;
 }
 
-// The Worker isn't running under the static test server: answer /api/ from the real lookup code
-// on saved fixtures, and keep uploads in memory.
-async function fakeApi(page) {
-  const files = new Map();
-  await page.route('**/api/lookup?*', async (route) => {
-    const id = new URL(route.request().url()).searchParams.get('id');
-    const out = await lookup(id, fixtureFetch(), 'test@example.org');
-    await route.fulfill({ status: out.error ? 404 : 200, json: out });
-  });
-  await page.route('**/api/file/*', async (route) => {
-    const req = route.request();
-    const id = new URL(req.url()).pathname.split('/').pop();
-    if (!/^Bearer .+/.test(req.headers().authorization || '')) return route.fulfill({ status: 401, json: { error: 'Members only' } });
-    if (req.method() === 'PUT') { files.set(id, req.postDataBuffer()); return route.fulfill({ json: { ok: true, license: null } }); }
-    if (req.method() === 'GET' && files.has(id)) return route.fulfill({ body: files.get(id), contentType: 'application/pdf' });
-    return route.fulfill({ status: 404, json: { error: 'No file' } });
-  });
-  return files;
-}
-
 const noSideScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
 test('add by DOI, upload own PDF, search notes and PDF text, open at the page, reading list', async ({ page }) => {
-  const files = await fakeApi(page);
+  const { files } = await workerApi(page);
   await signInAsMember(page, 'res1@example.org');
   await page.goto('/?emulator#/');
   await page.reload();
@@ -96,8 +75,9 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
 
   // Search: PDF text (with a typo), tags and notes.
   await page.getByRole('link', { name: 'Library', exact: true }).click();
-  await page.getByLabel('Search the library').fill('sugamadex');
+  await page.getByLabel('Search the library').fill('sugammadex');
   await expect(page.getByText('p. 1')).toBeVisible();
+  await expect(page.locator('.snippet mark')).toHaveText('Sugammadex');
   await page.getByLabel('Search the library').fill('bayesian');
   await expect(page.getByRole('link', { name: 'Why Most Published Research Findings Are False' })).toBeVisible();
   await page.getByLabel('Search the library').fill('statistics');
@@ -127,7 +107,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
 });
 
 test('bulk import reads DOIs from the PDFs, names the rest from the file, skips repeats', async ({ page }) => {
-  const files = await fakeApi(page);
+  const { files } = await workerApi(page);
   await signInAsMember(page, 'res2@example.org');
   await page.goto('/?emulator#/');
   await page.reload();
@@ -160,7 +140,7 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
 });
 
 test('ATOTW PDFs with no printed DOI are found by the number in the file name or on the page', async ({ page }) => {
-  await fakeApi(page);
+  await workerApi(page);
   await signInAsMember(page, 'res3@example.org');
   await page.goto('/?emulator#/');
   await page.reload();
@@ -200,7 +180,7 @@ test('paper page decodes stored entities in the title and abstract, and bolds se
 });
 
 test('admin "Refresh abstracts" updates an old-style paper and an ATOTW-named paper, and leaves tags alone', async ({ page }) => {
-  await fakeApi(page);
+  await workerApi(page);
   const uid = await signInAsMember(page, 'res4@example.org');
   const api = 'http://127.0.0.1:8080/v1/projects/demo-jc/databases/(default)/documents';
   const headers = { Authorization: 'Bearer owner' };

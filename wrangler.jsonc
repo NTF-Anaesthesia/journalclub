@@ -5,6 +5,7 @@
   "assets": { "directory": "./public", "binding": "ASSETS", "not_found_handling": "single-page-application",
     "run_worker_first": ["/__/*", "/api/*"] },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "journalclub-files" }],
+  "d1_databases": [{ "binding": "SEARCH", "database_name": "journalclub-search" }],
   "vars": { "CONTACT_EMAIL": "journalclub@anantf.com" },
   "routes": [{ "pattern": "journalclub.anantf.com", "custom_domain": true }]
 }
