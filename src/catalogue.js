@@ -24,6 +24,14 @@ export const current = () => lib;
 
 // A Firestore call that hangs (seen on a phone: the count never came back) must not hold the page.
 export const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(`${what} timed out`), { code: 'timeout' })), ms))]);
+// How long a read took, in window.__jcTiming, so a stall shows which read it was.
+export const timed = (key, p) => { const t = performance.now(); const done = () => { timing[key] = Math.round(performance.now() - t); }; p.then(done, done); return p; };
+// One line a member can paste when the library hangs: browser, connection and the read timings.
+export const diagnostics = () => {
+  const n = typeof navigator !== 'undefined' ? navigator : {}, c = n.connection || {};
+  return JSON.stringify({ t: new Date().toISOString(), ua: n.userAgent, online: n.onLine, net: { type: c.effectiveType, rtt: c.rtt, down: c.downlink, save: c.saveData },
+    sync: !!readSync(), head: readHead()?.length || 0, ...timing });
+};
 const note = (k, e) => { timing[k] = e?.code || e?.message || String(e); console.warn('catalogue', k, e); };
 
 export async function loadLibrary(db) {
@@ -41,8 +49,8 @@ export async function loadLibrary(db) {
   }
   if (papers && since) {
     // The count only catches papers removed elsewhere: if it fails or is slow, keep the cached list and say so.
-    const [delta, count] = await Promise.all([getDocs(query(col, where('changedAt', '>', since))),
-      withTimeout(getCountFromServer(col), 4000, 'count').catch((e) => { note('countError', e); return null; })]);
+    const [delta, count] = await Promise.all([timed('deltaMs', getDocs(query(col, where('changedAt', '>', since)))),
+      withTimeout(timed('countMs', getCountFromServer(col)), 4000, 'count').catch((e) => { note('countError', e); return null; })]);
     delta.docs.forEach((d) => { papers.set(d.id, cleanPaper(d.data())); if (lib?.built) updateIndex(lib.built, d.id, papers.get(d.id)); });
     fetched = delta.size;
     if (count && papers.size !== count.data().count) papers = null;

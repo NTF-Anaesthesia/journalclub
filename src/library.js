@@ -123,7 +123,7 @@ async function renderSearch() {
       res.replaceChildren(...head.map(([id, p]) => paperItem(id, p)));
       timing.head = Math.round(performance.now() - t0);
     } else if (!readSync() && !ui.q) {
-      const h = await getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))).catch(() => null);
+      const h = await withTimeout(getDocs(query(collection(c.db, 'papers'), orderBy('addedAt', 'desc'), limit(PAGE))), 3000, 'first page').catch(() => null);
       if (h && !current() && page.isConnected) {
         res.replaceChildren(...h.docs.map((d) => paperItem(d.id, cleanPaper(d.data()))));
         timing.head = Math.round(performance.now() - t0);
@@ -134,12 +134,16 @@ async function renderSearch() {
   // catalogue replaces it when it arrives. Failures go to window.__jcTiming (loadError, starredError, ...).
   const why = (k) => (e) => { timing[k] = e?.code || e?.message || String(e); console.warn('library', k, e); };
   const real = loadLibrary();
+  // Starred and Recent wait no longer than the catalogue does; they fill in (and the list redraws) when they arrive.
+  const wait = readHead()?.length ? 2500 : 8000, starP = loadStarred(c.db, c.user.uid), recentP = loadRecent(c.db, c.user.uid);
   let [cat, starred, recent] = await Promise.all([
-    withTimeout(real, readHead()?.length ? 2500 : 8000, 'catalogue').catch((e) => { why('loadError')(e); return headCatalogue(); }),
-    withTimeout(loadStarred(c.db, c.user.uid), 5000, 'starred').catch((e) => { why('starredError')(e); return new Set(); }),
-    withTimeout(loadRecent(c.db, c.user.uid), 5000, 'recent').catch((e) => { why('recentError')(e); return []; })]);
+    withTimeout(real, wait, 'catalogue').catch((e) => { why('loadError')(e); return headCatalogue(); }),
+    withTimeout(starP, Math.min(wait, 3000), 'starred').catch((e) => { why('starredError')(e); return new Set(); }),
+    withTimeout(recentP, Math.min(wait, 3000), 'recent').catch((e) => { why('recentError')(e); return []; })]);
   if (!page.isConnected) return;
   x.starred = starred; x.recent = recent;
+  starP.then((s) => { if (page.isConnected && s !== starred) { x.starred = starred = s; redraw(); } }).catch(() => {});
+  recentP.then((r) => { if (page.isConnected && r !== recent) { x.recent = recent = r; redraw(); } }).catch(() => {});
   // Starred papers are kept for offline reading: fetch any not saved yet, quietly, once the full catalogue is here.
   real.then((full) => syncStarred(starred, full.papers, (id) => apiFetch(`/api/file/${id}`))).catch(() => {});
   let { papers } = cat;

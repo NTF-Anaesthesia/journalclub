@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
+import { timing, withTimeout, diagnostics } from './catalogue.js';
 import { refresh as refreshOffline, clearAll as clearOffline, usage as offlineUsage, sizeText } from './offline.js';
 import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
 
@@ -21,7 +22,9 @@ const app = initializeApp(emulator ? { ...firebaseConfig, projectId: emuProject 
 const EMU_SECRET = ['emu', 'only', '1'].join('-');
 const auth = getAuth(app);
 // Persistent cache: the library catalogue is read from IndexedDB on repeat opens (src/library.js loadLibrary).
-const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+// Auto-detect long polling: some phone networks stall Firestore's streaming channel, and every read that needs it then
+// waits for the SDK's 10 s offline timeout (src/catalogue.js timings). The SDK falls back to long polling when it must.
+const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }), experimentalAutoDetectLongPolling: true });
 
 if (emulator) {
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
@@ -50,15 +53,29 @@ const memberKey = (uid) => `jc.member.${uid}`;
 async function loadMember() {
   member = null;
   if (!user) return;
-  try {
-    const snap = await getDoc(doc(db, 'members', user.uid));
+  const t0 = performance.now(), uid = user.uid;
+  const apply = (snap) => {
     member = snap.exists() ? snap.data() : null;
     if (!member) clearOffline().catch(() => {}); // removed members lose their offline papers
-    try { if (member) localStorage.setItem(memberKey(user.uid), JSON.stringify({ role: member.role, name: member.name || '', email: member.email || '' })); else localStorage.removeItem(memberKey(user.uid)); } catch { /* ignore */ }
+    try { if (member) localStorage.setItem(memberKey(uid), JSON.stringify({ role: member.role, name: member.name || '', email: member.email || '' })); else localStorage.removeItem(memberKey(uid)); } catch { /* ignore */ }
+  };
+  const saved = () => { try { return JSON.parse(localStorage.getItem(memberKey(uid)) || 'null'); } catch { return null; } };
+  const fresh = getDoc(doc(db, 'members', uid));
+  try {
+    // A stalled stream must not hold the whole app for the SDK's 10 s offline timeout: after 2 s a member seen before
+    // is taken from this device, and the server's answer replaces it when it comes.
+    try { apply(await withTimeout(fresh, 2000, 'member')); }
+    catch (e) {
+      if (e.code !== 'timeout') throw e;
+      timing.memberError = 'timeout';
+      if (saved()) { member = saved(); fresh.then((s) => { if (user?.uid === uid) apply(s); }).catch(() => {}); }
+      else apply(await fresh);
+    }
   } catch (e) {
     console.error('loadMember', e.code, e.message);
-    try { member = e.code === 'unavailable' || navigator.onLine === false ? JSON.parse(localStorage.getItem(memberKey(user.uid)) || 'null') : null; } catch { member = null; }
+    member = e.code === 'unavailable' || navigator.onLine === false ? saved() : null;
   }
+  timing.member = Math.round(performance.now() - t0);
 }
 
 function route() {
@@ -128,8 +145,14 @@ async function renderMe() {
     ${admin ? '<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/admin">Admin</a></li></ul>' : ''}
     <h2>Offline papers</h2><p class="muted" id="offinfo">Counting…</p>
     <p><button id="offclear" type="button">Clear offline papers</button></p>
+    <h2>Trouble loading?</h2><p class="muted">If the library hangs or is slow, copy this and send it to the admin.</p>
+    <p><button id="diag" type="button">Copy diagnostics</button> <span class="muted" id="diagmsg" role="status"></span></p>
     <p><button id="out" class="danger-btn">Sign out</button></p></section>`);
   page.querySelector('#out').onclick = async () => { await clearOffline().catch(() => {}); signOut(auth); };
+  page.querySelector('#diag').onclick = async () => {
+    const text = diagnostics(), msg = page.querySelector('#diagmsg');
+    try { await navigator.clipboard.writeText(text); msg.textContent = 'Copied.'; } catch { msg.textContent = text; }
+  };
   const info = page.querySelector('#offinfo');
   const showUsage = async () => { const u = await offlineUsage(); info.textContent = u.count ? `${u.count} ${u.count === 1 ? 'paper' : 'papers'} saved on this device, ${sizeText(u.bytes)}. Starred papers and the last 20 you opened are kept.` : 'No papers saved on this device yet. Starred papers and the last 20 you opened are kept.'; };
   page.querySelector('#offclear').onclick = async () => { await clearOffline(); showUsage(); };
