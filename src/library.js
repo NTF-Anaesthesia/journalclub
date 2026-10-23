@@ -1,11 +1,12 @@
-// Library pages: search, add by DOI or PubMed ID, paper page (notes, ratings, PDF), reading lists.
+// Library pages: search, add by DOI or PubMed ID, bulk PDF import, paper page (notes, ratings, PDF), reading lists.
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, addDoc, deleteDoc, updateDoc, query, where,
   serverTimestamp, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
 import { buildIndex, searchPapers } from './search.js';
+import { findDoi } from './doi.js';
 
-export const LIBRARY_ROUTES = ['library', 'add', 'paper', 'lists', 'list'];
+export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'lists', 'list'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
 
 let c;              // { db, user, member, view, el, esc } for the current render
@@ -13,7 +14,6 @@ let lib = null;     // cached { papers, notes, texts, index }
 let lastQuery = '';
 
 const $in = (root, sel) => root.querySelector(sel);
-const isCc = (oa) => /^cc|^public-domain$/.test(String(oa?.license || '').toLowerCase());
 const mayEdit = (p) => c.member.role === 'admin' || p.addedBy === c.user.uid;
 const authorLine = (a = []) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} et al.` : a.join(', '));
 const tagList = (s) => [...new Set(String(s).split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
@@ -40,6 +40,7 @@ const dirty = () => { lib = null; };
 export function renderLibraryRoute(r, ctx) {
   c = ctx;
   if (r.name === 'add') return renderAdd();
+  if (r.name === 'import') return renderImport();
   if (r.name === 'paper' && r.arg) return renderPaper(r.arg, Number(r.arg2) || null);
   if (r.name === 'lists') return renderLists();
   if (r.name === 'list' && r.arg) return renderList(r.arg);
@@ -59,7 +60,7 @@ async function renderSearch() {
   const page = c.el(`<section class="card"><h1>Library</h1>
     <form id="sf" role="search" class="row"><input id="q" type="search" aria-label="Search the library"
       placeholder="Search titles, tags, notes and PDFs" autocomplete="off"></form>
-    <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/lists">Reading lists</a></p>
+    <p class="actions"><a class="button primary" href="#/add">Add a paper</a> <a href="#/import">Import PDFs</a> <a href="#/lists">Reading lists</a></p>
     <p id="count" class="muted">Loading…</p><ul id="res" class="list"></ul></section>`);
   c.view.replaceChildren(page);
   const q = $in(page, '#q');
@@ -82,12 +83,6 @@ async function renderSearch() {
   q.oninput = show;
   $in(page, '#sf').onsubmit = (e) => { e.preventDefault(); q.blur(); };
   show();
-}
-
-function oaLine(oa) {
-  if (isCc(oa)) return `Open access, licence ${c.esc(oa.license)}`;
-  if (oa?.status && !['closed', 'unknown'].includes(oa.status)) return `Free to read (${c.esc(oa.status)}), no Creative Commons licence`;
-  return 'Not open access: read it through your own access';
 }
 
 async function renderAdd() {
@@ -117,7 +112,6 @@ async function renderAdd() {
     msg.textContent = '';
     const prev = c.el(`<div><h2>${c.esc(p.title)}</h2>
       <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
-      <p class="muted">${oaLine(p.oa)}</p>
       <form id="af" class="stack">
         <label>Tags, comma separated <input id="tags" placeholder="airway, obstetric, exam"></label>
         <label>Why read it (one line) <input id="why" maxlength="200"></label>
@@ -125,16 +119,96 @@ async function renderAdd() {
     $in(page, '#prev').replaceChildren(prev);
     $in(prev, '#af').onsubmit = async (ev) => {
       ev.preventDefault();
-      const ref = await addDoc(collection(c.db, 'papers'), {
-        doi: p.doi || '', pmid: p.pmid || '', title: p.title, authors: (p.authors || []).slice(0, 50),
-        journal: p.journal || '', year: p.year || null, abstract: (p.abstract || '').slice(0, 20000),
-        oa: { status: p.oa?.status || 'unknown', license: p.oa?.license || null, url: p.oa?.url || null },
-        tags: tagList($in(prev, '#tags').value), why: $in(prev, '#why').value.trim(),
-        addedBy: c.user.uid, addedAt: serverTimestamp(),
-      });
+      const ref = await addPaper(p, tagList($in(prev, '#tags').value), $in(prev, '#why').value.trim());
       dirty();
       location.hash = `#/paper/${ref.id}`;
     };
+  };
+}
+
+function addPaper(p, tags, why = '') {
+  return addDoc(collection(c.db, 'papers'), {
+    doi: p.doi || '', pmid: p.pmid || '', title: p.title, authors: (p.authors || []).slice(0, 50),
+    journal: p.journal || '', year: p.year || null, abstract: (p.abstract || '').slice(0, 20000),
+    oa: { status: p.oa?.status || 'unknown', license: p.oa?.license || null, url: p.oa?.url || null },
+    tags, why, addedBy: c.user.uid, addedAt: serverTimestamp(),
+  });
+}
+
+// Stores the PDF and its per-page text for search. Returns null on success, else the reason.
+async function storePdf(id, buf, pages) {
+  const r = await apiFetch(`/api/file/${id}`, { method: 'PUT', body: buf, headers: { 'Content-Type': 'application/pdf' } });
+  if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Upload refused.';
+  await setDoc(doc(c.db, 'texts', id), { pages });
+  await updateDoc(doc(c.db, 'papers', id), { file: { pages: pages.length, size: buf.byteLength } });
+  return null;
+}
+
+const MAX_PDF = 25 * 1024 * 1024;
+const fileTitle = (name) => name.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').trim() || 'Untitled PDF';
+
+async function renderImport() {
+  const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Import PDFs</h1>
+    <p class="muted">Choose PDFs or a whole folder. Each paper's DOI is read from its first pages and the details filled in;
+      PDFs without a DOI are added under their file name. Papers already in the library are skipped.</p>
+    <form id="if" class="stack">
+      <label>PDF files <input type="file" id="files" accept="application/pdf" multiple></label>
+      <label>Or a folder <input type="file" id="folder" webkitdirectory></label>
+      <label>Tags for all, comma separated <input id="itags" placeholder="airway, exam"></label>
+      <button class="primary">Import</button></form>
+    <p id="imsg" class="muted"></p><ul id="ires" class="list"></ul></section>`);
+  c.view.replaceChildren(page);
+  const msg = $in(page, '#imsg'), res = $in(page, '#ires');
+  $in(page, '#if').onsubmit = async (e) => {
+    e.preventDefault();
+    const files = [...$in(page, '#files').files, ...$in(page, '#folder').files].filter((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+    if (!files.length) { msg.textContent = 'Choose some PDFs first.'; return; }
+    const btn = $in(page, '#if button');
+    btn.disabled = true;
+    res.replaceChildren();
+    const tags = tagList($in(page, '#itags').value);
+    const { papers } = await loadLibrary();
+    const byDoi = new Map([...papers].filter(([, p]) => p.doi).map(([id, p]) => [p.doi.toLowerCase(), [id, p]]));
+    const byTitle = new Map([...papers].map(([id, p]) => [p.title.toLowerCase(), [id, p]]));
+    const { extractPages } = await import('./pdf.js');
+    const counts = { added: 0, skipped: 0, failed: 0 };
+    for (const [i, f] of files.entries()) {
+      msg.textContent = `Importing ${i + 1} of ${files.length}…`;
+      const row = c.el(`<li><span><strong>${c.esc(f.name)}</strong><br><span class="muted">Reading…</span></span></li>`);
+      res.append(row);
+      const say = (html, kind) => { row.querySelector('.muted').innerHTML = html; counts[kind]++; };
+      try {
+        if (f.size > MAX_PDF) { say('Skipped: over 25 MB.', 'failed'); continue; }
+        const buf = await f.arrayBuffer();
+        const pages = await extractPages(buf.slice(0));
+        const found = findDoi(pages.slice(0, 2).join(' '));
+        let p = null;
+        if (found) {
+          const r = await apiFetch('/api/lookup?id=' + encodeURIComponent(found));
+          if (r.ok) p = await r.json();
+        }
+        p = p || { title: fileTitle(f.name), doi: '' };
+        const dup = (p.doi && byDoi.get(p.doi.toLowerCase())) || byTitle.get(p.title.toLowerCase());
+        let id;
+        if (dup) {
+          const [did, dp] = dup;
+          if (dp.file || !mayEdit(dp)) { say(`Already in the library: <a href="#/paper/${did}">${c.esc(dp.title)}</a>`, 'skipped'); continue; }
+          id = did; // in the library without a PDF: attach this one
+        } else {
+          id = (await addPaper(p, tags)).id;
+          const entry = [id, { ...p, addedBy: c.user.uid }];
+          if (p.doi) byDoi.set(p.doi.toLowerCase(), entry);
+          byTitle.set(p.title.toLowerCase(), entry);
+        }
+        const err = await storePdf(id, buf, pages);
+        if (err) { say(`Added without the PDF: ${c.esc(err)}`, 'failed'); continue; }
+        (dup ? dup[1] : byTitle.get(p.title.toLowerCase())[1]).file = { pages: pages.length };
+        say(`<a href="#/paper/${id}">${c.esc(p.title)}</a>${p.doi ? '' : ' · no DOI found, named from the file'}`, 'added');
+      } catch (err) { console.error(err); say('Could not read or upload this PDF.', 'failed'); }
+    }
+    dirty();
+    btn.disabled = false;
+    msg.textContent = `Done: ${counts.added} added, ${counts.skipped} already there, ${counts.failed} failed.`;
   };
 }
 
@@ -162,7 +236,7 @@ async function renderPaper(id, hitPage) {
   ].filter(Boolean).join(' · ');
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted">${c.esc(authorLine(p.authors))}<br>${c.esc([p.journal, p.year].filter(Boolean).join(' '))}</p>
-    <p>${links}</p><p class="muted">${oaLine(p.oa)}</p>
+    <p>${links}</p>
     <p>${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
     ${p.abstract ? `<details><summary>Abstract</summary><p class="abstract">${c.esc(p.abstract)}</p></details>` : ''}
@@ -176,12 +250,12 @@ async function renderPaper(id, hitPage) {
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
 
-  // PDF: open, or upload behind the licence gate.
+  // PDF: open, or upload.
   const file = $in(page, '#file');
   if (p.file) {
     const open = c.el(`<button class="primary">Open PDF${hitPage ? ` at page ${hitPage}` : ''}</button>`);
     open.onclick = () => openPdf(id, hitPage);
-    file.append(open, c.el(`<span class="muted"> ${p.file.pages} pages · ${p.file.basis === 'own' ? 'own material' : 'licence ' + c.esc(p.file.license || '')}</span>`));
+    file.append(open, c.el(`<span class="muted"> ${p.file.pages} pages</span>`));
     if (mayEdit(p)) {
       const rm = c.el('<button class="link danger">Remove PDF</button>');
       rm.onclick = async () => {
@@ -194,22 +268,14 @@ async function renderPaper(id, hitPage) {
       file.append(rm);
     }
   } else if (mayEdit(p)) {
-    const cc = isCc(p.oa);
     const up = c.el(`<form id="uf" class="stack">
-      <p class="muted">PDFs are stored only for papers under a Creative Commons licence, or for your own or the department's
-        material (slides, guidelines, teaching notes). For paywalled papers share the link: everyone reads them through their own access.</p>
-      <label class="check"><input type="radio" name="basis" value="cc" ${cc ? '' : 'disabled'}>
-        Creative Commons licence ${cc ? `(${c.esc(p.oa.license)})` : '(none found for this paper)'}</label>
-      <label class="check"><input type="radio" name="basis" value="own"> My or the department's own material</label>
       <input type="file" id="pdf" accept="application/pdf" aria-label="PDF file">
       <button class="primary">Upload PDF</button><p id="umsg" class="muted"></p></form>`);
     file.append(up);
     up.onsubmit = async (e) => {
       e.preventDefault();
       const msg = $in(up, '#umsg');
-      const basis = up.querySelector('input[name=basis]:checked')?.value;
       const f = $in(up, '#pdf').files[0];
-      if (!basis) { msg.textContent = 'Choose why this PDF may be stored.'; return; }
       if (!f) { msg.textContent = 'Choose a PDF.'; return; }
       msg.textContent = 'Reading the PDF…';
       try {
@@ -217,16 +283,13 @@ async function renderPaper(id, hitPage) {
         const { extractPages } = await import('./pdf.js');
         const pages = await extractPages(buf.slice(0));
         msg.textContent = 'Uploading…';
-        const r = await apiFetch(`/api/file/${id}?basis=${basis}`, { method: 'PUT', body: buf, headers: { 'Content-Type': 'application/pdf' } });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) { msg.textContent = out.error || 'Upload refused.'; return; }
-        await setDoc(doc(c.db, 'texts', id), { pages });
-        await updateDoc(doc(c.db, 'papers', id), { file: { pages: pages.length, basis, license: out.license || null, size: f.size } });
+        const err = await storePdf(id, buf, pages);
+        if (err) { msg.textContent = err; return; }
         dirty(); renderPaper(id, null);
       } catch (err) { console.error(err); msg.textContent = 'Could not read or upload this PDF.'; }
     };
   } else {
-    file.append(c.el('<p class="muted">No PDF. The person who added the paper can upload one if its licence allows.</p>'));
+    file.append(c.el('<p class="muted">No PDF. The person who added the paper can upload one.</p>'));
   }
 
   // Notes.

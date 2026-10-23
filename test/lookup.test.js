@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fixtureFetch } from './fixture-fetch.js';
-import { parseId, parseCrossref, parsePubmed, parseUnpaywall, licenceAllows, lookup } from '../worker/lookup.js';
+import { parseId, parseCrossref, parsePubmed, parseUnpaywall, lookup } from '../worker/lookup.js';
 
 const fx = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
 const key = (doi) => doi.replace(/[/.]/g, '_');
@@ -44,18 +44,6 @@ test('parseUnpaywall reads status and licence', () => {
   assert.equal(closed.status, 'bronze');
   assert.equal(closed.license, null);
   assert.equal(parseUnpaywall(null).status, 'unknown');
-});
-
-test('licence gate: CC or own material only; a closed paper is refused', () => {
-  assert.equal(licenceAllows({ license: 'cc-by' }, 'cc'), true);
-  assert.equal(licenceAllows({ license: 'cc-by-nc-nd' }, 'cc'), true);
-  assert.equal(licenceAllows({ license: 'public-domain' }, 'cc'), true);
-  assert.equal(licenceAllows({ status: 'bronze', license: null }, 'cc'), false);
-  assert.equal(licenceAllows({ status: 'hybrid', license: 'publisher-specific, author manuscript' }, 'cc'), false);
-  assert.equal(licenceAllows({ status: 'closed', license: null }, 'cc'), false);
-  assert.equal(licenceAllows(null, 'own'), true);
-  assert.equal(licenceAllows({ license: 'cc-by' }, ''), false);
-  assert.equal(licenceAllows({ license: 'cc-by' }, 'whatever'), false);
 });
 
 test('lookup by DOI merges Crossref, PubMed abstract and Unpaywall', async () => {

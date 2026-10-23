@@ -79,7 +79,7 @@ const TABS = [
   ['vote', 'Vote', '<path d="M7 11V20H4v-9zM7 11l4-7c1.5 0 2.5 1 2.2 2.6L12.6 10H18a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'],
   ['sessions', 'Sessions', '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', paper: '', home: 'home', lists: 'lists', list: 'lists',
+const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', home: 'home', lists: 'lists', list: 'lists',
   vote: 'vote', sessions: 'sessions', session: 'sessions', rota: 'sessions' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 

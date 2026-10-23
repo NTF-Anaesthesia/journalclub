@@ -5,7 +5,7 @@
 // API calls carry the member's Firebase ID token. The Worker holds no service account: it reads the
 // member's own row (and a paper) from the Firestore REST API with that token, so Firestore checks the
 // token and the rules decide, exactly as in the browser.
-import { lookup, unpaywall, licenceAllows } from './lookup.js';
+import { lookup } from './lookup.js';
 
 const AUTH_HELPER = 'https://journalclub-anantf.firebaseapp.com';
 const FIRESTORE = 'https://firestore.googleapis.com/v1/projects/journalclub-anantf/databases/(default)/documents';
@@ -80,12 +80,6 @@ export async function api(request, env, fetchFn = fetch) {
   }
 
   if (request.method === 'PUT') {
-    const basis = url.searchParams.get('basis');
-    // The licence is checked here against Unpaywall, not taken from the browser.
-    const oa = basis === 'cc' ? await unpaywall(field(paper, 'doi'), fetchFn, email) : null;
-    if (!licenceAllows(oa, basis)) {
-      return json({ error: 'Refused: this paper has no Creative Commons licence. Share the link instead; residents read it through their own access.' }, 403);
-    }
     if (Number(request.headers.get('Content-Length') || 0) > MAX_PDF) return json({ error: 'PDF is over 25 MB' }, 413);
     const body = await request.arrayBuffer();
     if (body.byteLength > MAX_PDF) return json({ error: 'PDF is over 25 MB' }, 413);
@@ -93,9 +87,9 @@ export async function api(request, env, fetchFn = fetch) {
     if (head !== '%PDF-') return json({ error: 'Not a PDF' }, 415);
     await env.FILES.put(key, body, {
       httpMetadata: { contentType: 'application/pdf' },
-      customMetadata: { uploadedBy: member.uid, basis, license: oa?.license || 'own' },
+      customMetadata: { uploadedBy: member.uid },
     });
-    return json({ ok: true, basis, license: oa?.license || null, size: body.byteLength });
+    return json({ ok: true, size: body.byteLength });
   }
   return json({ error: 'Method not allowed' }, 405);
 }

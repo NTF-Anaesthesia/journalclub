@@ -1,4 +1,4 @@
-// Paper lookups (Crossref, PubMed, Unpaywall) and the licence gate. Pure functions plus one
+// Paper lookups (Crossref, PubMed, Unpaywall). Pure functions plus one
 // orchestrator that takes fetch as an argument, so tests run on saved fixtures.
 
 const CROSSREF = 'https://api.crossref.org/works/';
@@ -70,15 +70,6 @@ export function parseUnpaywall(json) {
     license: best.license || null,
     url: best.url_for_pdf || best.url || null,
   };
-}
-
-// Files are kept only under a Creative Commons (or public-domain) licence, or when the uploader
-// declares the file is their own or the department's material. Everything else is refused.
-export function licenceAllows(oa, basis) {
-  if (basis === 'own') return true;
-  if (basis !== 'cc') return false;
-  const lic = String(oa?.license || '').toLowerCase();
-  return lic.startsWith('cc') || lic === 'public-domain';
 }
 
 async function getJson(fetchFn, url) {

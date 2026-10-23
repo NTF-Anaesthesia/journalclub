@@ -7,8 +7,9 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
   `GET /api/lookup?id=<DOI or PMID>` (Crossref, PubMed, Unpaywall; `worker/lookup.js`) and `/api/file/<paper>`
   (PDFs in the private R2 bucket `journalclub-files`). The Worker has no service account: it reads the caller's own
   member row from the Firestore REST API with the caller's ID token, so the rules decide.
-- Licence gate: a PDF is stored only if Unpaywall shows a Creative Commons (or public-domain) licence for the DOI, checked
-  by the Worker, or the uploader declares it is their own or the department's material. Paywalled papers are links only.
+- PDFs: the person who added a paper (or an admin) can upload its PDF; there is no licence check. `#/import` takes many
+  PDFs or a folder at once: it reads each DOI from the first pages (`src/doi.js`), fills in the details by lookup, names
+  PDFs without a DOI from the file name, and skips papers already in the library.
 - Library (`src/library.js`): papers, one note and rating per member, reading lists. PDF text is extracted in the browser
   with PDF.js at upload (`src/pdf.js`) and kept per page in `texts/<paper>`; `src/search.js` builds a MiniSearch index over
   titles, tags, notes, abstracts and PDF pages, so a hit opens the PDF at its page.
@@ -16,7 +17,7 @@ Journal club and paper library for the department, at journalclub.anantf.com. Me
   paper (`papers/<paper>/votes/<uid>`); admins build the presenter rota from the members list (`rota/main`) and plan
   sessions (`sessions/<id>`: date, paper, presenter), which moves the rota on; the presenter adds the summary and slides link.
 - `firestore.rules`: members read only their own row, admins manage members and invites; joining needs an unused, unexpired invite.
-- Tests: `npm run test:unit` (lookups on saved fixtures in `test/fixtures/`, licence gate, Worker API), `npm run test:rules` (Firestore emulator, needs Java) and `npm run test:e2e` (Playwright at 390 px).
+- Tests: `npm run test:unit` (lookups on saved fixtures in `test/fixtures/`, DOI finder, Worker API), `npm run test:rules` (Firestore emulator, needs Java) and `npm run test:e2e` (Playwright at 390 px).
 
 ## First admin
 
