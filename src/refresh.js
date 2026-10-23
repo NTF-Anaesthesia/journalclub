@@ -26,7 +26,7 @@ export function mountRefresh(page, ctx, onDone) {
   const { db, user, el } = ctx;
   const box = el(`<p class="actions"><button type="button" id="refresh">Refresh abstracts</button>
     <span id="refresh-msg" class="muted" role="status"></span></p>`);
-  page.append(box);
+  page.querySelector('#count').before(box); // under the Add / Import links, above the long list
   const btn = box.querySelector('#refresh'), msg = box.querySelector('#refresh-msg');
   btn.onclick = async () => {
     btn.disabled = true;
