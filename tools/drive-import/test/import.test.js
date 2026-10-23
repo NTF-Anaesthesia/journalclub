@@ -16,6 +16,14 @@ import { fixtureFetch } from '../../../test/fixture-fetch.js';
 const PROSE = 'Sedation in the intensive care unit is given to relieve anxiety and to permit tolerance of the tube. '.repeat(4);
 const ATOTW = `ANAESTHESIA TUTORIAL OF THE WEEK 551 SGLT-2 Receptor Inhibitors: Pharmacology and Anaesthetic Implications 9th January 2012 SUMMARY ${PROSE} QUESTIONS Before reading this tutorial answer these.`;
 
+test('titleFromFileName drops journal series prefixes and citation tails', () => {
+  assert.equal(titleFromFileName('CEACCP Made up topic and more 2001-Smith-89-92.pdf'), 'Made up topic and more');
+  assert.equal(titleFromFileName('BJAEd Another made-up topic 2016-Jones-e12-e15.pdf'), 'Another made-up topic');
+  assert.equal(titleFromFileName('ATOTW 551 Made up tutorial 2012 Brown.pdf'), 'Made up tutorial');
+  assert.equal(titleFromFileName('CEACCP Only a title.pdf'), 'Only a title');
+  assert.equal(titleFromFileName('Made up trial 2019 Smith.pdf'), 'Made up trial 2019 Smith');
+});
+
 test('titleFromFileName drops prefixes and suffixes, keeps real hyphens', () => {
   assert.equal(titleFromFileName('AICM_202405 Acid-base-physiology.pdf'), 'Acid base physiology');
   assert.equal(titleFromFileName('CRASH-3 2019 TXA in TBI.pdf'), 'CRASH-3 2019 TXA in TBI');
