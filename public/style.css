@@ -166,6 +166,8 @@ a.plain { color:inherit; text-decoration:none; }
 
 /* In-app PDF reader */
 .reader-bar { display:flex; align-items:center; gap:var(--app-s2); flex-wrap:wrap; margin:0 0 var(--app-s1); }
+.reader-share { margin-left:auto; display:flex; gap:var(--app-s1); }
+.reader-share button { min-height:44px; }
 .reader-title { margin:0 0 var(--app-s1); font-size:1.05rem; line-height:1.25; }
 .reader-tools { position:sticky; top:var(--app-bar-h, 56px); z-index:5; display:flex; align-items:center; gap:var(--app-s2); padding:var(--app-s1) 0; background:var(--app-bg, #fff); }
 .reader-jump { display:flex; align-items:center; gap:var(--app-s1); margin:0; }

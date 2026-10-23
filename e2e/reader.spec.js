@@ -11,7 +11,7 @@ const ID = 'rd1';
 const TEXTS = ['Opening page about airway anatomy', 'Second page on induction agents', 'Third page: sugammadex reverses rocuronium quickly'];
 
 // A multi-page PDF, one line of text per page (valid xref so PDF.js reads it without repair).
-function makePdf(texts) {
+function makePdf(texts, pad = 0) {
   const n = texts.length;
   const objs = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${texts.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${n} >>`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
@@ -20,6 +20,7 @@ function makePdf(texts) {
     objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents ${5 + i * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`);
     objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
   });
+  if (pad) objs.push(`<< /Length ${pad} >>\nstream\n${'0'.repeat(pad)}\nendstream`); // unreferenced bulk after the pages
   let out = '%PDF-1.4\n';
   const offs = objs.map((o, i) => { const at = out.length; out += `${i + 1} 0 obj\n${o}\nendobj\n`; return at; });
   const xref = out.length;
@@ -28,8 +29,10 @@ function makePdf(texts) {
   return Buffer.from(out, 'latin1');
 }
 
+let files;
 async function setup(page) {
-  const { files, db } = await workerApi(page, PROJECT);
+  let db;
+  ({ files, db } = await workerApi(page, PROJECT));
   await page.goto(`/?emulator=${PROJECT}`);
   const uid = await page.evaluate(async () => { await window.__jc.signIn('rd@example.org'); return window.__jc.auth.currentUser.uid; });
   for (const [path, fields] of [
@@ -124,4 +127,38 @@ test('airplane mode: the shell loads and a starred PDF opens from the offline co
   await page.goto(`/?emulator=${PROJECT}#/me`);
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect.poll(() => cacheKeys(page)).toBe(0);
+});
+
+test('a large PDF opens on page 1 from Range chunks, before the whole file has downloaded', async ({ page }) => {
+  await setup(page);
+  const big = makePdf(TEXTS, 6 * 1024 * 1024);
+  files.set(`papers/${ID}.pdf`, big);
+  const ranges = [];
+  page.on('response', (r) => {
+    if (new URL(r.url()).pathname !== `/api/file/${ID}` || r.status() !== 206) return;
+    const m = /^bytes (\d+)-(\d+)\//.exec(r.headers()['content-range'] || '');
+    if (m) ranges.push(Number(m[2]) - Number(m[1]) + 1);
+  });
+  await page.goto(`/?emulator=${PROJECT}#/read/${ID}/1`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await expect(page.locator('.reader-pg canvas').first()).toBeVisible();
+  expect(ranges.length).toBeGreaterThan(0);
+  expect(ranges.reduce((a, b) => a + b, 0)).toBeLessThan(big.length / 2);
+});
+
+test('Download saves the PDF under the paper title; Send shares the file where the browser can', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.__shared = null;
+    navigator.canShare = (d) => !!d?.files?.length;
+    navigator.share = async (d) => { window.__shared = { name: d.files?.[0]?.name, type: d.files?.[0]?.type, size: d.files?.[0]?.size, title: d.title }; };
+  });
+  await page.goto(`/?emulator=${PROJECT}#/read/${ID}`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download' }).click()]);
+  expect(dl.suggestedFilename()).toBe('Reversal of neuromuscular block.pdf');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect.poll(() => page.evaluate(() => window.__shared)).toEqual({
+    name: 'Reversal of neuromuscular block.pdf', type: 'application/pdf', size: files.get(`papers/${ID}.pdf`).length, title: 'Reversal of neuromuscular block' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

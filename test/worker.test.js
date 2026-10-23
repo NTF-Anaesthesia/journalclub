@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { api } from '../worker/index.js';
+import { api, parseRange } from '../worker/index.js';
 import { fixtureFetch } from './fixture-fetch.js';
+import { r2Stub } from './r2-stub.js';
 
 const tokenFor = (uid) => `x.${btoa(JSON.stringify({ user_id: uid })).replace(/=+$/, '')}.sig`;
 const PDF = new TextEncoder().encode('%PDF-1.4\n%%EOF');
@@ -24,11 +25,7 @@ function world({ members = {}, papers = {} } = {}) {
   };
 }
 
-function bucket() {
-  const store = new Map();
-  return { store, async get(k) { return store.has(k) ? { body: store.get(k) } : null; },
-    async put(k, v, o) { store.set(k, v); this.meta = o; }, async delete(k) { store.delete(k); } };
-}
+const bucket = r2Stub;
 
 const W = world({
   members: { mem1: { role: 'member' }, mem2: { role: 'member' }, adm: { role: 'admin' } },
@@ -81,4 +78,48 @@ test('non-PDF bodies are refused', async () => {
 
 test('missing R2 binding gives a clear 503', async () => {
   assert.equal((await api(req('/api/file/open', 'mem1'), {}, W)).status, 503);
+});
+
+test('parseRange handles open, closed, suffix, oversize and bad ranges', () => {
+  assert.deepEqual(parseRange('bytes=0-99', 1000), { offset: 0, length: 100 });
+  assert.deepEqual(parseRange('bytes=900-', 1000), { offset: 900, length: 100 });
+  assert.deepEqual(parseRange('bytes=-100', 1000), { offset: 900, length: 100 });
+  assert.deepEqual(parseRange('bytes=990-5000', 1000), { offset: 990, length: 10 });
+  assert.equal(parseRange('bytes=1000-', 1000), null);
+  assert.equal(parseRange('bytes=5-2', 1000), null);
+  assert.equal(parseRange('bytes=0-1,5-6', 1000), undefined);
+  assert.equal(parseRange(null, 1000), undefined);
+});
+
+test('PDF GET honours Range with 206, HEAD gives the size, ETag gives 304, bad range gives 416', async () => {
+  const env = { FILES: bucket() };
+  const body = new TextEncoder().encode('%PDF-1.4\n' + 'x'.repeat(991));
+  assert.equal((await api(req('/api/file/closed', 'mem1', { method: 'PUT', body }), env, W)).status, 200);
+
+  const full = await api(req('/api/file/closed', 'mem2'), env, W);
+  assert.equal(full.status, 200);
+  assert.equal(full.headers.get('Accept-Ranges'), 'bytes');
+  assert.equal(full.headers.get('Cache-Control'), 'private, max-age=86400');
+  assert.equal(full.headers.get('Content-Length'), '1000');
+  assert.equal((await full.arrayBuffer()).byteLength, 1000);
+
+  const part = await api(req('/api/file/closed', 'mem2', { headers: { Range: 'bytes=0-255' } }), env, W);
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get('Content-Range'), 'bytes 0-255/1000');
+  assert.equal((await part.arrayBuffer()).byteLength, 256);
+
+  const tail = await api(req('/api/file/closed', 'mem2', { headers: { Range: 'bytes=-10' } }), env, W);
+  assert.equal(tail.headers.get('Content-Range'), 'bytes 990-999/1000');
+
+  const head = await api(req('/api/file/closed', 'mem2', { method: 'HEAD' }), env, W);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('Content-Length'), '1000');
+
+  const etag = full.headers.get('ETag');
+  assert.ok(etag);
+  assert.equal((await api(req('/api/file/closed', 'mem2', { headers: { 'If-None-Match': etag } }), env, W)).status, 304);
+
+  assert.equal((await api(req('/api/file/closed', 'mem2', { headers: { Range: 'bytes=5000-' } }), env, W)).status, 416);
+  assert.equal((await api(req('/api/file/nope', 'mem2', { headers: { Range: 'bytes=0-9' } }), env, W)).status, 404);
+  assert.equal((await api(req('/api/file/closed', null, { headers: { Range: 'bytes=0-9' } }), env, W)).status, 401);
 });

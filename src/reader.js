@@ -1,6 +1,7 @@
 // In-app PDF reader: #/read/<paper>/<page>?q=<term>. Continuous scroll, pinch or +/- zoom, page jump, the search term
 // highlighted, last page remembered per member on this device. The PDF comes from the offline cache when it is there,
-// else from the Worker (and is then kept for offline use).
+// else from the Worker in Range chunks (and is then kept for offline use). Streaming is off on purpose: the plain
+// network loader always opens with a small Range request, so only the chunks the first page needs are downloaded.
 import './polyfills.js';
 import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
 import { doc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
@@ -10,6 +11,7 @@ import { loadStarred } from './prefs.js';
 GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 const ZOOM_MIN = 0.5, ZOOM_MAX = 4;
 const KEEP_PAGES = 400;
+const RANGE_CHUNK = 256 * 1024;
 
 const posKey = (uid) => `jc.read.${uid}`;
 export function lastPage(uid, id) {
@@ -26,6 +28,9 @@ function savePage(uid, id, n) {
   } catch { /* storage unavailable */ }
 }
 
+// A safe file name from the paper title.
+export const fileName = (title) => `${String(title || 'paper').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) || 'paper'}.pdf`;
+
 // Words of the search term worth highlighting (lower case, 2+ letters).
 export const termWords = (q) => [...new Set(String(q || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2))].slice(0, 6);
 
@@ -37,6 +42,7 @@ export async function renderReader(r, c, apiFetch) {
       <a href="#/paper/${c.esc(id)}" id="rback">← Back to paper</a>
       <a href="#/paper/${c.esc(id)}" id="rsess" hidden>Session</a>
       <span class="badge" id="roff" hidden>Offline copy</span>
+      <span class="reader-share" id="rshare" hidden><button type="button" id="rdl">Download</button><button type="button" id="rsend">Send</button></span>
     </div>
     <h1 class="reader-title" id="rtitle">PDF</h1>
     <div class="reader-tools">
@@ -49,8 +55,10 @@ export async function renderReader(r, c, apiFetch) {
   const say = (t) => { $('#rmsg').textContent = t; $('#rmsg').hidden = !t; };
 
   // Paper title and its latest session (both optional: the reader still works without them).
+  let title = 'paper';
   getDoc(doc(c.db, 'papers', id)).then((s) => {
     if (!s.exists()) return;
+    title = s.data().title || title;
     $('#rtitle').textContent = s.data().title || 'PDF';
     document.title = `${s.data().title || 'PDF'} · Reader · Journal club`;
   }).catch(() => {});
@@ -59,23 +67,66 @@ export async function renderReader(r, c, apiFetch) {
     if (latest) { const a = $('#rsess'); a.href = `#/session/${latest.id}`; a.hidden = false; }
   }).catch(() => {});
 
-  let buf, cached = false;
+  // Cached copy: read from memory. Otherwise PDF.js pulls the file from the Worker in Range chunks, so page 1 shows
+  // before the rest arrives; the whole file is then fetched in the background to keep it for offline use.
   const hit = await getCached(id);
-  if (hit) { buf = await hit.arrayBuffer(); cached = true; } else {
+  let source;
+  const hitBuf = hit ? await hit.arrayBuffer() : null;
+  if (hit) source = { data: new Uint8Array(hitBuf.slice(0)) }; // PDF.js takes over (detaches) the buffer it is given
+  else {
     try {
-      const res = await apiFetch(`/api/file/${id}`);
-      if (!res.ok) { say(res.status === 404 ? 'This paper has no PDF.' : 'Could not open the PDF.'); return; }
-      buf = await res.arrayBuffer();
+      const token = await c.user.getIdToken();
+      source = { url: `/api/file/${id}`, httpHeaders: { Authorization: `Bearer ${token}` }, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
     } catch { say('Could not open the PDF. You may be offline and it is not saved on this device.'); return; }
   }
   if (!page.isConnected) return;
-  if (cached) touch(id).catch(() => {});
-  else keep(id, buf).then(async () => { $('#roff').hidden = false; await prune(await loadStarred(c.db, c.user.uid).catch(() => new Set())); }).catch(() => {});
-  if (cached || isOffline(id)) $('#roff').hidden = false;
+  if (hit) { touch(id).catch(() => {}); }
+  if (hit || isOffline(id)) $('#roff').hidden = false;
 
   let pdf;
-  const task = getDocument({ data: new Uint8Array(buf.slice(0)) });
-  try { pdf = await task.promise; } catch { say('This PDF could not be read.'); return; }
+  const task = getDocument(source);
+  try { pdf = await task.promise; } catch (e) {
+    say(e?.name === 'MissingPDFException' || e?.status === 404 ? 'This paper has no PDF.' : hit ? 'This PDF could not be read.' : 'Could not open the PDF. You may be offline and it is not saved on this device.');
+    return;
+  }
+  // The whole file, for Download and Send. Fetched early so Send can share at once (iOS needs the tap still fresh).
+  let bytes = hit ? Promise.resolve(hitBuf) : null;
+  if (!hit) {
+    bytes = apiFetch(`/api/file/${id}`).then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error('no file'))));
+    bytes.then(async (buf) => {
+      if (!page.isConnected) return;
+      await keep(id, buf.slice(0));
+      $('#roff').hidden = false;
+      await prune(await loadStarred(c.db, c.user.uid).catch(() => new Set()));
+    }).catch(() => {});
+  }
+  bytes.catch(() => {});
+  const fileOf = async () => new File([await bytes], fileName(title), { type: 'application/pdf' });
+  $('#rdl').onclick = async () => {
+    try {
+      const url = URL.createObjectURL(await fileOf());
+      const a = Object.assign(document.createElement('a'), { href: url, download: fileName(title) });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch { say('Could not download the PDF. Try again when online.'); }
+  };
+  $('#rsend').onclick = async () => {
+    let file;
+    try { file = await fileOf(); } catch { say('Could not get the PDF. Try again when online.'); return; }
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title }); say(''); } catch (e) {
+        if (e?.name === 'NotAllowedError') say('PDF ready: tap Send again.');
+      }
+      return;
+    }
+    // No file sharing here (most desktop browsers): share or copy the paper's link instead (members only).
+    const link = `${location.origin}/#/paper/${id}`;
+    try {
+      if (navigator.share) await navigator.share({ title, url: link });
+      else { await navigator.clipboard.writeText(link); say('This browser cannot send files: link to the paper copied.'); }
+    } catch { /* cancelled */ }
+  };
+  $('#rshare').hidden = false;
   const total = pdf.numPages;
   $('#pn').textContent = String(total);
   $('#pg').max = String(total);

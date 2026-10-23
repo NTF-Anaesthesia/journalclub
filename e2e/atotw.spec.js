@@ -11,7 +11,7 @@ const at = (ms) => ({ timestampValue: new Date(ms).toISOString() });
 const T0 = Date.UTC(2026, 0, 1);
 const FILE = { mapValue: { fields: { pages: { integerValue: '1' } } } };
 const P453 = 'ANAESTHESIA TUTORIAL OF THE WEEK 453 20th May 2013 The Shoulder Block Dr A Author. Summary The brachial plexus supplies the arm.';
-const P242 = 'ANAESTHESIA TUTORIAL OF THE WEEK 242 9th January 2012 Sedation in intensive care Dr Jane Roe.';
+const P242 = 'ANAESTHESIA TUTORIAL OF THE WEEK 242 9th January 2012 SEDATION IN THE ICU Dr Jane Roe.';
 
 async function signIn(page, email, role = 'member') {
   await page.goto(`/?emulator=${PROJECT}`);
@@ -31,7 +31,7 @@ test('admin Tidy ATOTW: preview first, nothing written until Apply; hand edits s
   const w = await workerApi(page, PROJECT);
   const uid = await signIn(page, 'admin.tidy@example.org', 'admin');
   await seed(page, 'a1', { title: s('ATOTW 453 the_shoulder_block'), addedBy: s(uid), addedAt: at(T0 + 1000) });
-  await seed(page, 'a2', { title: s('ATOTW 242 sedation'), year: { integerValue: '1999' }, manual: arr(['year']), addedBy: s(uid), addedAt: at(T0 + 2000) });
+  await seed(page, 'a2', { title: s('ATOTW 242 sedation in the icu'), year: { integerValue: '1999' }, manual: arr(['year']), addedBy: s(uid), addedAt: at(T0 + 2000) });
   await seed(page, 'o1', { title: s('Unrelated trial of propofol'), addedBy: s(uid), addedAt: at(T0 + 3000) });
   await indexPages(w.db, 'a1', [P453]);
   await indexPages(w.db, 'a2', [P242]);
@@ -43,7 +43,7 @@ test('admin Tidy ATOTW: preview first, nothing written until Apply; hand edits s
   await page.getByRole('button', { name: 'Tidy ATOTW' }).click();
   const tidy = page.getByRole('dialog', { name: 'Tidy ATOTW' });
   await expect(tidy.getByText(/2 to change, 0 already tidy, 0 unsure/)).toBeVisible({ timeout: 20000 });
-  await expect(tidy.getByText('ATOTW 453 the_shoulder_block → The Shoulder Block')).toBeVisible();
+  await expect(tidy.getByText('ATOTW 453 the_shoulder_block → The shoulder block')).toBeVisible();
   await expect(tidy.getByText('Year: 2013')).toBeVisible();
   await expect(tidy.getByText('Year: 1999')).toHaveCount(0);
   await expect(tidy).not.toContainText('propofol');
@@ -58,13 +58,13 @@ test('admin Tidy ATOTW: preview first, nothing written until Apply; hand edits s
   await expect(page.getByText(/Tidied 2; 0 unchanged, 0 unsure/)).toBeVisible({ timeout: 20000 });
 
   const a1 = (await doc(page, 'a1')).fields, a2 = (await doc(page, 'a2')).fields;
-  expect(a1.title.stringValue).toBe('The Shoulder Block');
+  expect(a1.title.stringValue).toBe('The shoulder block');
   expect(a1.journal.stringValue).toBe('Anaesthesia Tutorial of the Week');
   expect(a1.year.integerValue).toBe('2013');
   expect(a1.atotw.integerValue).toBe('453');
   expect(a1.manual.arrayValue.values.map((v) => v.stringValue).sort()).toEqual(['journal', 'title', 'year']);
   expect(a1.tags.arrayValue.values || []).toHaveLength(0); // no new tags
-  expect(a2.title.stringValue).toBe('Sedation');
+  expect(a2.title.stringValue).toBe('Sedation in the ICU');
   expect(a2.year.integerValue).toBe('1999'); // typed by hand: stays
   expect((await doc(page, 'o1')).fields.title.stringValue).toBe('Unrelated trial of propofol');
 
@@ -73,7 +73,7 @@ test('admin Tidy ATOTW: preview first, nothing written until Apply; hand edits s
   await expect(page.getByText('Anaesthesia Tutorial of the Week · 2013 · No. 453')).toBeVisible();
   await open(page);
   await page.getByLabel('Search the library').fill('453');
-  await expect(page.locator('#res li', { hasText: 'The Shoulder Block' })).toBeVisible();
+  await expect(page.locator('#res li', { hasText: 'The shoulder block' })).toBeVisible();
   await expect(page.locator('#res li')).toHaveCount(1);
 
   // Running it again finds nothing to change.

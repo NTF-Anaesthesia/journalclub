@@ -1,67 +1,12 @@
-// "Tidy ATOTW" (admin, More in select mode): papers named from a file ("ATOTW 453 The Shoulder Block") get a clean title,
-// the journal "Anaesthesia Tutorial of the Week", the year printed on page 1, and a number field `atotw` (not a tag).
-// Fields typed by hand (`manual`) are left alone. The preview is built here; nothing is written until Apply.
+// "Tidy ATOTW" (admin, More in select mode): preview sheet, then Apply. The rules are in atotw-plan.js; nothing is
+// written until Apply.
 import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { atotwNumber } from './doi.js';
 import { current, restore, dirty } from './catalogue.js';
 import { sheet, snack } from './bulk.js';
 import { cleanPaper } from './abstract.js';
+import { tidyPlan, tidyWrite, crossrefYear } from './atotw-plan.js';
 
-export const ATOTW_JOURNAL = 'Anaesthesia Tutorial of the Week';
-const PREFIX = /^\s*atotw[\s_#.-]*(?:no\.?\s*)?\d{1,4}(?!\d)[\s_.:–—-]*/i;
-const MONTH = '(?:January|February|March|April|May|June|July|August|September|October|November|December)';
-const words = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[a-z0-9]+/g) || [];
-const squash = (s) => String(s || '').replace(/[_\s]+/g, ' ').trim();
-
-// The title without its "ATOTW <n>" start, underscores as spaces; '' when nothing is left.
-export const strippedTitle = (title) => squash(String(title || '').replace(PREFIX, ''));
-
-// The same words as `plain`, in the page's own spelling and capitals, when page 1 prints them in a row; else null.
-export function pageSpan(plain, page) {
-  const w = words(plain);
-  if (w.length < 2) return null;
-  const re = new RegExp(w.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^A-Za-z0-9]+'), 'i');
-  return re.exec(String(page || '').replace(/\s+/g, ' '))?.[0].trim() || null;
-}
-
-// The year printed on a tutorial's first page ("20 May 2025", "May 2025"); only when the page names the series.
-export function pageYear(page) {
-  const t = String(page || '').replace(/\s+/g, ' ');
-  if (!/tutorial\s+of\s+the\s+week/i.test(t)) return null;
-  return Number(new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\s+(\\d{4})\\b`, 'i').exec(t)?.[1]
-    || new RegExp(`\\b${MONTH}\\s+(\\d{4})\\b`, 'i').exec(t)?.[1]) || null;
-}
-
-// What Tidy would write for one stored paper given its page-1 text ('' when none), or null when it is not an ATOTW paper.
-// status: 'change' | 'same' | 'unsure' (nothing usable left of the title).
-export function tidyPlan(p, page1 = '') {
-  const n = p.atotw || (/^\s*atotw\b/i.test(p.title || '') ? atotwNumber(p.title) : null);
-  if (!n || n > 2000) return null;
-  const manual = new Set(p.manual || []);
-  const plain = strippedTitle(p.title);
-  const oldTitle = p.title || '';
-  const next = {};
-  if (!manual.has('title')) {
-    let title = pageSpan(plain, page1) || plain;
-    if (title && title === title.toLowerCase()) title = title[0].toUpperCase() + title.slice(1); // a file name in lower case: capital first letter
-    if (title && title !== oldTitle) next.title = title.slice(0, 500);
-    else if (!title && !p.atotw) return { n, next: {}, status: 'unsure', note: 'No title left after the number' };
-  }
-  if (!manual.has('journal') && p.journal !== ATOTW_JOURNAL) next.journal = ATOTW_JOURNAL;
-  const year = pageYear(page1);
-  if (!manual.has('year') && year && year !== p.year) next.year = year;
-  if (p.atotw !== n) next.atotw = n;
-  return { n, next, status: Object.keys(next).length ? 'change' : 'same' };
-}
-
-// What to store: the changes, the fields of title/journal/year that changed added to `manual`.
-export function tidyWrite(p, plan) {
-  const out = { ...plan.next };
-  const hand = new Set(p.manual || []);
-  for (const k of ['title', 'journal', 'year']) if (k in plan.next) hand.add(k);
-  if (hand.size !== (p.manual || []).length) out.manual = [...hand];
-  return out;
-}
+export * from './atotw-plan.js';
 
 const api = (c, path) => c.user.getIdToken().then((t) => fetch(path, { headers: { Authorization: `Bearer ${t}` } }));
 const esc = (c, s) => c.esc(String(s ?? ''));
@@ -84,7 +29,14 @@ export async function tidyAtotw(c, ids, onChange) {
         const r = p.file ? await api(c, `/api/firstpage/${id}`) : null;
         if (r?.ok) page = (await r.json()).pages?.[0] || '';
       } catch { /* offline: the title is tidied without page 1 */ }
-      const plan = tidyPlan(p, page);
+      let plan = tidyPlan(p, page);
+      // No year on page 1: tutorials from about 525 on have a DOI, and Crossref knows the year.
+      if (plan && !plan.next.year && !p.year && plan.n >= 525 && !(p.manual || []).includes('year')) {
+        try {
+          const r = await api(c, '/api/lookup?id=' + encodeURIComponent(`10.28923/atotw.${plan.n}`));
+          if (r.ok) plan = tidyPlan(p, page, crossrefYear(await r.json()));
+        } catch { /* offline: no year */ }
+      }
       if (plan) plans.set(id, plan);
     }
   };
