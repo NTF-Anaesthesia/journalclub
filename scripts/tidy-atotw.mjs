@@ -46,7 +46,15 @@ function page1(ids) {
   for (let i = 0; i < ids.length; i += 40) {
     const list = ids.slice(i, i + 40).map((x) => `'${x.replace(/[^A-Za-z0-9_-]/g, '')}'`).join(',');
     const sql = `SELECT paper, SUBSTR(text, 1, 3000) AS text FROM page_text WHERE page = 1 AND paper IN (${list})`;
-    const o = execFileSync('npx', ['wrangler', 'd1', 'execute', 'journalclub-search', '--remote', '--json', '--command', sql], { encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 64e6 });
+    // On Windows the shell splits the SQL on spaces, so pass it as one quoted argument (the SQL has no double quotes).
+    const win = process.platform === 'win32';
+    let o;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        o = execFileSync('npx', ['wrangler', 'd1', 'execute', 'journalclub-search', '--remote', '--json', '--command', win ? `"${sql}"` : sql], { encoding: 'utf8', shell: win, maxBuffer: 64e6 });
+        break;
+      } catch (e) { if (attempt === 3) throw e; }
+    }
     for (const row of JSON.parse(o.slice(o.indexOf('[')))[0].results || []) res[row.paper] = row.text;
   }
   return res;
