@@ -9,6 +9,6 @@ patient details.
 ## Private notes and repo layout
 
 Private notes: `NTF-Anaesthesia/anantf-private` (private, org members only). At the start of a session attach it
-(`add_repo`) and read its `CLAUDE.md`; save lasting notes there, never here. Repo layout: one repo per app or app
+(`add_repo`) and read its `AGENTS.md`; save lasting notes there, never here. Repo layout: one repo per app or app
 group, public code plus a `-private` pair; a new app gets its own repo (test in anantf-private `hub/new-repo.md`),
 never a folder here.
