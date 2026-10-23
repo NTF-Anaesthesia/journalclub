@@ -1,6 +1,6 @@
 // Paper lookups (Crossref, PubMed, Unpaywall). Pure functions plus one
 // orchestrator that takes fetch as an argument, so tests run on saved fixtures.
-import { decodeEntities } from '../src/abstract.js';
+import { xmlToText } from '../src/abstract.js';
 
 const CROSSREF = 'https://api.crossref.org/works/';
 const EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=xml&id=';
@@ -17,10 +17,7 @@ export function parseId(input) {
   return null;
 }
 
-const unxml = (s) => String(s ?? '')
-  .replace(/<[^>]+>/g, '')
-  .replace(/&[^;\s]+;/g, decodeEntities)
-  .replace(/\s+/g, ' ').trim();
+const unxml = xmlToText;
 const first = (re, s) => { const m = re.exec(s); return m ? m[1] : ''; };
 
 // Crossref JATS abstract: one line per <jats:title> section, as "Title: text".
@@ -52,10 +49,10 @@ export function parseCrossref(json) {
 export function parsePubmed(xml) {
   const art = first(/<PubmedArticle>([\s\S]*?)<\/PubmedArticle>/, xml);
   if (!art) return null;
-  const abstract = [...art.matchAll(/<AbstractText([^>]*)>([\s\S]*?)<\/AbstractText>/g)]
+  const abstract = [...first(/<Abstract>([\s\S]*?)<\/Abstract>/, art).matchAll(/<AbstractText([^>]*)>([\s\S]*?)<\/AbstractText>/g)]
     .map(([, attrs, text]) => {
       const label = first(/Label="([^"]+)"/, attrs);
-      return (label ? label + ': ' : '') + unxml(text);
+      return (label ? unxml(label) + ': ' : '') + unxml(text);
     }).join('\n');
   const authors = [...first(/<AuthorList[^>]*>([\s\S]*?)<\/AuthorList>/, art).matchAll(/<Author[^>]*>([\s\S]*?)<\/Author>/g)]
     .map(([, a]) => [unxml(first(/<ForeName>([\s\S]*?)<\/ForeName>/, a)), unxml(first(/<LastName>([\s\S]*?)<\/LastName>/, a))]

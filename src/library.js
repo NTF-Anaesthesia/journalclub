@@ -5,7 +5,7 @@ import {
 } from 'firebase/firestore';
 import { buildIndex, searchPapers } from './search.js';
 import { findDoi } from './doi.js';
-import { abstractSections } from './abstract.js';
+import { abstractSections, cleanPaper } from './abstract.js';
 
 export const LIBRARY_ROUTES = ['library', 'add', 'import', 'paper', 'remove', 'lists', 'list'];
 const NUS_PROXY = 'https://libproxy1.nus.edu.sg/login?url=';
@@ -29,7 +29,7 @@ async function loadLibrary() {
   const [ps, ns, ts] = await Promise.all([
     getDocs(collection(c.db, 'papers')), getDocs(collectionGroup(c.db, 'notes')), getDocs(collection(c.db, 'texts')),
   ]);
-  const papers = new Map(ps.docs.map((d) => [d.id, d.data()]));
+  const papers = new Map(ps.docs.map((d) => [d.id, cleanPaper(d.data())]));
   const notes = new Map();
   ns.forEach((d) => { const pid = d.ref.parent.parent.id; notes.set(pid, [...(notes.get(pid) || []), d.data()]); });
   const texts = new Map(ts.docs.map((d) => [d.id, d.data().pages || []]));
@@ -225,7 +225,7 @@ async function openPdf(id, page) {
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
-  const p = snap.data();
+  const p = cleanPaper(snap.data());
   const [ns, ls] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')), getDocs(collection(c.db, 'lists'))]);
   const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
   const mine = notes.find((n) => n.uid === c.user.uid);
@@ -349,7 +349,7 @@ async function renderPaper(id, hitPage) {
 async function renderRemove(id) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
-  const p = snap.data();
+  const p = cleanPaper(snap.data());
   if (!mayEdit(p)) { c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who added this paper, or an admin, can remove it.</p><p><a href="#/paper/${c.esc(id)}">Back to the paper</a></p></section>`)); return; }
   const page = c.el(`<section class="card"><p><a href="#/paper/${c.esc(id)}">← Back to the paper</a></p><h1>Remove</h1>
     <p><strong>${c.esc(p.title)}</strong></p>

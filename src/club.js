@@ -1,5 +1,6 @@
 // Journal club pages: home (next session), voting on library papers, presenter rota, session pages.
 import qrcode from 'qrcode-generator';
+import { decodeEntities } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, deleteDoc, updateDoc, query, where, orderBy,
   limit, writeBatch, serverTimestamp, Timestamp,
@@ -59,7 +60,7 @@ async function tally() {
     if (d.id === c.user.uid) mine.add(pid);
   });
   return ps.docs.filter((d) => !done.has(d.id))
-    .map((d) => ({ id: d.id, title: d.data().title, year: d.data().year, votes: counts.get(d.id) || 0, mine: mine.has(d.id) }))
+    .map((d) => ({ id: d.id, title: decodeEntities(d.data().title), year: d.data().year, votes: counts.get(d.id) || 0, mine: mine.has(d.id) }))
     .sort((a, b) => b.votes - a.votes || a.title.localeCompare(b.title));
 }
 
