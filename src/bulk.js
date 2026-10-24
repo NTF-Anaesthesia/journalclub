@@ -413,7 +413,7 @@ export function removeSelected(c, ids, onChange) {
 // ---- Find duplicates (admin): review page with merge ----
 export async function renderDuplicates(c, loadLibrary) {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Duplicates</h1>
-    <p class="muted">Papers with the same DOI or nearly the same title. Merging keeps one paper with everyone's notes, the PDF, tags, reading lists and journal club sessions of both.</p>
+    <p class="muted">Papers with the same DOI or nearly the same title. Merging keeps one paper with everyone's shared notes (private notes stay with their writer), the PDF, tags, reading lists and journal club sessions of both.</p>
     <p id="dmsg" class="muted" role="status">Looking…</p><div id="dl"></div></section>`);
   c.view.replaceChildren(page);
   if (!isAdmin(c)) { page.querySelector('#dmsg').textContent = 'Admins only.'; return; }
@@ -462,13 +462,17 @@ export async function mergePapers(c, keepId, dropId) {
   if (Object.keys(m.edit).length) await updateDoc(ks.ref, { ...m.edit, ...now });
   if (m.presented) await updateDoc(ks.ref, { presented: m.presented, ...now });
   if (Object.keys(m.biblio).length) await updateDoc(ks.ref, { ...m.biblio, ...now });
-  const [kn, dn] = await Promise.all([getDocs(collection(c.db, 'papers', keepId, 'notes')), getDocs(collection(c.db, 'papers', dropId, 'notes'))]);
+  // Only shared notes are readable here; a member's private note is never read or moved. A shared note moves unless the
+  // member already has a private note on the kept paper (the write is refused), and then it stays where it is.
+  const shared = (pid) => getDocs(query(collection(c.db, 'papers', pid, 'notes'), where('shared', '==', true)));
+  const [kn, dn] = await Promise.all([shared(keepId), shared(dropId)]);
   const notes = mergeNotes(kn.docs.map((d) => ({ uid: d.id, ...d.data() })), dn.docs.map((d) => ({ uid: d.id, ...d.data() })));
+  const stuck = new Set();
   for (const n of notes) {
     await setDoc(doc(c.db, 'papers', keepId, 'notes', n.uid), { text: n.text || '', rating: n.rating || 0,
-      ...(n.name ? { name: n.name } : {}), updatedAt: n.updatedAt || serverTimestamp() });
+      ...(n.name ? { name: n.name } : {}), shared: true, updatedAt: n.updatedAt || serverTimestamp() }).catch(() => stuck.add(n.uid));
   }
-  await Promise.all(dn.docs.map((d) => deleteDoc(d.ref)));
+  await Promise.all(dn.docs.filter((d) => !stuck.has(d.id)).map((d) => deleteDoc(d.ref)));
   const ls = await getDocs(query(collection(c.db, 'lists'), where('paperIds', 'array-contains', dropId)));
   for (const l of ls.docs) {
     const ids = [...new Set(l.data().paperIds.map((id) => (id === dropId ? keepId : id)))];

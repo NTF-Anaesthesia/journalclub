@@ -1,13 +1,13 @@
 // Per-member state synced across devices: the Starred list (lists/star-<uid>, private), the last 20 papers
 // opened (users/<uid>.recent), saved searches (users/<uid>.searches), and the member's private reading lists. Everything shared is a tag on the paper.
 import {
-  doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where, serverTimestamp, arrayUnion, arrayRemove,
+  doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where, serverTimestamp, arrayUnion, arrayRemove, deleteField,
 } from 'firebase/firestore';
 
 const RECENT = 20;
 const SEARCHES = 20;
-let mine = { uid: null, starred: null, recent: null, searches: null };
-const reset = (uid) => { if (mine.uid !== uid) mine = { uid, starred: null, recent: null, searches: null }; };
+let mine = { uid: null, starred: null, recent: null, searches: null, noted: null, scan: null };
+const reset = (uid) => { if (mine.uid !== uid) mine = { uid, starred: null, recent: null, searches: null, noted: null, scan: null }; };
 export const starId = (uid) => `star-${uid}`;
 
 export async function loadStarred(db, uid) {
@@ -42,6 +42,56 @@ async function readUser(db, uid) {
     userRead = { uid, p: getDoc(doc(db, 'users', uid)).then((s) => (s.exists() ? s.data() : {}), (e) => { userRead = null; throw e; }) };
   }
   return userRead.p;
+}
+
+// Which papers the member has a note on: users/<uid>.noted = { paperId: updatedAt in ms }. It lets the Library mark rows
+// and Saved list the notes without reading a note per paper. Notes written before the index existed are found once by
+// scanNoted (users/<uid>.notedScan marks it done).
+export async function loadNoted(db, uid) {
+  reset(uid);
+  if (!mine.noted) {
+    const u = await readUser(db, uid).catch(() => ({}));
+    mine.noted = { ...(u.noted || {}) }; mine.scanned = !!u.notedScan;
+  }
+  return mine.noted;
+}
+
+// Records (ms) or clears (null) the member's note on a paper.
+export async function setNoted(db, uid, pid, ms) {
+  const noted = await loadNoted(db, uid);
+  const ref = doc(db, 'users', uid);
+  if (ms == null) {
+    delete noted[pid];
+    await updateDoc(ref, { [`noted.${pid}`]: deleteField(), updatedAt: serverTimestamp() }).catch(() => {});
+  } else {
+    noted[pid] = ms;
+    await setDoc(ref, { noted: { [pid]: ms }, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+  }
+}
+
+// Once per member: reads their own note doc on every paper (a few at a time) to fill the index from before it existed.
+// Resolves with the index; a failure leaves the scan to run again next time.
+export function scanNoted(db, uid, paperIds) {
+  reset(uid);
+  if (mine.scan) return mine.scan;
+  mine.scan = (async () => {
+    const noted = await loadNoted(db, uid);
+    if (mine.scanned) return noted;
+    const ids = [...paperIds];
+    const found = {};
+    for (let i = 0; i < ids.length; i += 10) {
+      await Promise.all(ids.slice(i, i + 10).map(async (pid) => {
+        const s = await getDoc(doc(db, 'papers', pid, 'notes', uid));
+        const d = s.exists() ? s.data() : null;
+        if (d?.text) found[pid] = d.updatedAt?.toMillis ? d.updatedAt.toMillis() : Date.now();
+      }));
+    }
+    Object.assign(noted, found);
+    await setDoc(doc(db, 'users', uid), { noted: found, notedScan: Date.now(), updatedAt: serverTimestamp() }, { merge: true });
+    mine.scanned = true;
+    return noted;
+  })().catch((e) => { mine.scan = null; throw e; });
+  return mine.scan;
 }
 
 export async function loadRecent(db, uid) {

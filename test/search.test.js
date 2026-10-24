@@ -26,11 +26,17 @@ function world({ members, papers, notes = {}, texts = {} }) {
     if ((m = /^members\/([^/]+)$/.exec(path))) {
       return m[1] === caller ? ok(doc(path, { role: str(members[caller].role) })) : new Response('{}', { status: 403 });
     }
-    if ((m = /^papers\/([^/]+)$/.exec(path))) {
+    if ((m = /^papers\/([^/:]+)$/.exec(path))) {
       return papers[m[1]] ? ok(doc(path, { addedBy: str(papers[m[1]].addedBy) })) : new Response('{}', { status: 404 });
     }
-    if ((m = /^papers\/([^/]+)\/notes$/.exec(path))) {
-      return ok(page(notes[m[1]] || [], url, (t, i) => doc(`${path}/u${i}`, { text: str(t) })));
+    // Notes: a plain string is a shared note, { private } is a private one. As under the rules, a list that could
+    // include another member's private note is refused; only a query filtered on shared == true is answered.
+    if ((m = /^papers\/([^/]+)\/notes$/.exec(path))) return new Response('{}', { status: 403 });
+    if ((m = /^papers\/([^/]+):runQuery$/.exec(path))) {
+      const f = JSON.parse(init.body).structuredQuery.where?.fieldFilter;
+      if (!(f?.field.fieldPath === 'shared' && f.op === 'EQUAL' && f.value.booleanValue === true)) return new Response('{}', { status: 403 });
+      return ok((notes[m[1]] || []).filter((t) => typeof t === 'string')
+        .map((t, i) => ({ document: doc(`papers/${m[1]}/notes/u${i}`, { text: str(t), shared: { booleanValue: true } }) })));
     }
     if (path === 'papers') return ok(page(Object.keys(papers), url, (id) => doc(`papers/${id}`, {})));
     if (path === 'texts') {
@@ -109,6 +115,41 @@ test('notes are indexed from Firestore, not from the caller, and found as page 0
   // A paper hit in both its notes and its PDF reports the PDF page.
   await api(putPages('p2', 'mem2', ['Nothing', 'Epidural fever and sepsis']), env, W);
   assert.deepEqual((await find(env, W, 'epidural')).map((h) => [h.paperId, h.page]), [['p2', 2]]);
+});
+
+test('private notes are never indexed, and a note switched to private leaves the index', async () => {
+  const env = { SEARCH: d1.db };
+  const notes = { p1: ['Shared note about caudal blocks', { private: 'Private musings on zebrafish' }] };
+  const W = world({ members, papers, notes });
+  assert.equal((await api(req('/api/index/p1/notes', 'mem1', { method: 'POST' }), env, W)).status, 200);
+  assert.deepEqual((await find(env, W, 'caudal')).map((h) => [h.paperId, h.page]), [['p1', 0]]);
+  for (const uid of ['mem1', 'mem2', 'adm']) assert.equal((await find(env, W, 'zebrafish', uid)).length, 0);
+  // The only shared note goes private: a refresh clears the paper's notes row.
+  notes.p1 = [{ private: 'Shared note about caudal blocks' }];
+  assert.equal((await api(req('/api/index/p1/notes', 'mem1', { method: 'POST' }), env, W)).status, 200);
+  assert.equal((await find(env, W, 'caudal')).length, 0);
+  // The admin backfill also clears a row whose notes are all private.
+  await api(req('/api/index/p1/notes', 'mem1', { method: 'POST' }), env, world({ members, papers, notes: { p1: ['Stale shared'] } }));
+  assert.equal((await find(env, W, 'stale')).length, 1);
+  await api(req('/api/backfill', 'adm', { method: 'POST', body: JSON.stringify({ phase: 'notes' }) }), env, W);
+  assert.equal((await find(env, W, 'stale')).length, 0);
+});
+
+test('the first schema run clears notes indexed before notes could be private, once', async () => {
+  const db = (await localD1());
+  try {
+    const { ensureSchema } = await import('../worker/search.js');
+    await ensureSchema(db.db);
+    await db.db.batch([db.db.prepare("INSERT INTO page_text (paper, page, text) VALUES ('x1', 0, 'old private note'), ('x1', 1, 'pdf page')"),
+      db.db.prepare("DELETE FROM search_meta WHERE k = 'notes_shared_only'")]);
+    resetSchemaCache();
+    await ensureSchema(db.db);
+    assert.deepEqual((await db.db.prepare('SELECT page FROM page_text WHERE paper = ?').bind('x1').all()).results.map((r) => r.page), [1]);
+    await db.db.prepare("INSERT INTO page_text (paper, page, text) VALUES ('x1', 0, 'shared note')").run();
+    resetSchemaCache();
+    await ensureSchema(db.db);
+    assert.equal((await db.db.prepare('SELECT count(*) AS n FROM page_text WHERE paper = ? AND page = 0').bind('x1').first()).n, 1);
+  } finally { await db.dispose(); }
 });
 
 test('removing the PDF drops its pages; removing the paper drops everything', async () => {

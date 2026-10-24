@@ -21,9 +21,17 @@ export const PAGES_MAX = 2000;
 const TEXT_MAX = 2 * 1024 * 1024;
 export const MARK = ['\u0002', '\u0003']; // snippet hit markers; the client escapes the text, then turns them into <mark>
 
+// Notes were once indexed whatever their visibility. The first run of this schema clears every notes row (page 0) so
+// only shared notes come back (on the next save of a note or the admin Reindex), then marks it done.
+export const NOTES_SHARED_ONLY = [
+  'CREATE TABLE IF NOT EXISTS search_meta (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID',
+  "DELETE FROM page_text WHERE page = 0 AND NOT EXISTS (SELECT 1 FROM search_meta WHERE k = 'notes_shared_only')",
+  "INSERT OR IGNORE INTO search_meta (k, v) VALUES ('notes_shared_only', '1')",
+];
+
 let ready = null;
 export function ensureSchema(db) {
-  ready = ready || db.batch(SCHEMA.map((q) => db.prepare(q))).catch((e) => { ready = null; throw e; });
+  ready = ready || db.batch(SCHEMA.map((q) => db.prepare(q))).then(() => db.batch(NOTES_SHARED_ONLY.map((q) => db.prepare(q)))).catch((e) => { ready = null; throw e; });
   return ready;
 }
 export const resetSchemaCache = () => { ready = null; };

@@ -71,7 +71,7 @@ test('migration file: old pages table copies over, twice is harmless, counts mat
     assert.deepEqual((await indexedPapers(fresh.db)).sort(), ['a', 'b']);
     resetSchemaCache();
     assert.equal((await search(fresh.db, 'epsilon'))[0].paperId, 'b');
-    assert.equal((await search(fresh.db, 'delta'))[0].page, 0);
+    assert.equal((await search(fresh.db, 'delta')).length, 0); // notes from before they could be private are cleared on first use
     await fresh.db.exec(readFileSync(new URL('../migrations/0002_drop_pages.sql', import.meta.url), 'utf8').split('\n').filter((l) => l.trim() && !l.startsWith('--')).join('\n'));
     assert.equal((await search(fresh.db, 'gamma'))[0].page, 2);
   } finally { await fresh.dispose(); }

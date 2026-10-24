@@ -249,3 +249,16 @@ a.cal-day:hover { background:var(--app-blush); }
 .group-h { font-size:var(--app-t-footnote, .9rem); letter-spacing:.06em; text-transform:uppercase; color:var(--app-wine); margin:var(--app-s3) 0 var(--app-s1); }
 .deckpage .about { white-space:pre-wrap; }
 span.tag { cursor:default; }
+
+/* Notes: privacy toggle, row dot, journal club card on the paper page, My notes in Saved */
+.note-vis { border:0; padding:0; margin:0; display:flex; gap:var(--app-s4); align-items:center; flex-wrap:wrap; }
+.note-vis legend { padding:0; font-weight:600; margin-bottom:var(--app-s1); }
+.note-vis label { display:inline-flex; align-items:center; gap:6px; min-height:44px; }
+.note-dot { display:inline-block; width:8px; height:8px; margin-left:6px; border-radius:50%; background:var(--app-wine); vertical-align:middle; }
+.jc-card { cursor:pointer; }
+.jc-card .eyebrow { margin:0; }
+.jc-card .jc-notes, .mynote .note-snippet { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-line; }
+.jc-card .pdf-pill { margin-left:var(--app-s1); vertical-align:middle; }
+#nsearch { width:100%; box-sizing:border-box; margin:var(--app-s1) 0; }
+.mynote { display:flex; flex-direction:column; gap:2px; }
+.mynote .note-snippet { -webkit-line-clamp:2; }

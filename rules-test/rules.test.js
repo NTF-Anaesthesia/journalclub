@@ -215,13 +215,69 @@ test('one note and rating per member, written only by that member', async () => 
   await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), note(4)));
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/admin1'), note(4)));
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), note(9)));
-  await assertSucceeds(getDocs(collectionGroup(as('admin1', 'a@x.org'), 'notes')));
+  await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), { ...note(1), shared: 'yes' }));
   await assertFails(getDocs(collectionGroup(as('nobody', 'n@x.org'), 'notes')));
-  // Merging duplicates: an admin moves a member's note (its own updatedAt kept) and clears the old one.
-  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1'), { text: 'moved', rating: 3, name: 'M', updatedAt: Timestamp.fromMillis(Date.now() - HOUR) }));
-  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1'), { text: 'moved', rating: 3, extra: 1, updatedAt: serverTimestamp() }));
+  // Merging duplicates: an admin creates a missing note (its own updatedAt kept) and clears the old one.
+  await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem2'), { text: 'moved', rating: 3, name: 'M', shared: true, updatedAt: Timestamp.fromMillis(Date.now() - HOUR) }));
+  await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem2'), { text: 'moved', rating: 3, extra: 1, updatedAt: serverTimestamp() }));
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1/notes/mem1'), { text: 'old stamp', rating: 1, updatedAt: Timestamp.fromMillis(0) }));
-  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem1')));
+  await assertSucceeds(deleteDoc(doc(as('admin1', 'a@x.org'), 'papers/p1/notes/mem2')));
+});
+
+test('a private note is read by its writer only; shared notes by every member; queries must filter on shared', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'm2@x.org', role: 'member', inviteId: 'seed' }));
+  await assertSucceeds(setDoc(doc(as('mem1', 'm@x.org'), 'papers/p1'), newPaper('mem1')));
+  const m1 = as('mem1', 'm@x.org'), m2 = as('mem2', 'm2@x.org'), ad = as('admin1', 'a@x.org');
+  const n = (text, shared) => ({ text, rating: 0, name: 'N', ...(shared === undefined ? {} : { shared }), updatedAt: serverTimestamp() });
+  // A member's own note that does not exist yet reads as absent (the one-time notes scan relies on it).
+  assert.equal((await assertSucceeds(getDoc(doc(m1, 'papers/p1/notes/mem1')))).exists(), false);
+  await assertSucceeds(setDoc(doc(m1, 'papers/p1/notes/mem1'), n('secret one'))); // no field: private
+  await assertSucceeds(setDoc(doc(m2, 'papers/p1/notes/mem2'), n('secret two', false)));
+  await assertSucceeds(setDoc(doc(ad, 'papers/p1/notes/admin1'), n('open note', true)));
+  // The writer reads their own private note.
+  await assertSucceeds(getDoc(doc(m1, 'papers/p1/notes/mem1')));
+  await assertSucceeds(getDoc(doc(m2, 'papers/p1/notes/mem2')));
+  // Another member and an admin cannot read it, by get, list or collection group.
+  await assertFails(getDoc(doc(m2, 'papers/p1/notes/mem1')));
+  await assertFails(getDoc(doc(ad, 'papers/p1/notes/mem1')));
+  await assertFails(getDoc(doc(ad, 'papers/p1/notes/mem2')));
+  await assertFails(getDocs(collection(m2, 'papers/p1/notes')));
+  await assertFails(getDocs(collection(ad, 'papers/p1/notes')));
+  await assertFails(getDocs(collectionGroup(m2, 'notes')));
+  await assertFails(getDocs(collectionGroup(ad, 'notes')));
+  // Asking only for shared notes works for everyone and returns none of the private ones.
+  for (const who of [m1, m2, ad]) {
+    const got = await assertSucceeds(getDocs(query(collection(who, 'papers/p1/notes'), where('shared', '==', true))));
+    assert.deepEqual(got.docs.map((d) => d.id), ['admin1']);
+    const grp = await assertSucceeds(getDocs(query(collectionGroup(who, 'notes'), where('shared', '==', true))));
+    assert.deepEqual(grp.docs.map((d) => d.id), ['admin1']);
+  }
+  await assertSucceeds(getDoc(doc(m2, 'papers/p1/notes/admin1')));
+  // Signed-in non-members read nothing.
+  await assertFails(getDoc(doc(as('nobody', 'n@x.org'), 'papers/p1/notes/admin1')));
+  // An admin may not overwrite a member's private note (merge only creates a missing one or changes a shared one).
+  await assertFails(setDoc(doc(ad, 'papers/p1/notes/mem1'), { text: 'overwritten', rating: 0, name: 'N', shared: true, updatedAt: Timestamp.fromMillis(Date.now() - HOUR) }));
+  await assertSucceeds(setDoc(doc(ad, 'papers/p1/notes/admin1'), { text: 'changed', rating: 0, name: 'N', shared: true, updatedAt: Timestamp.fromMillis(Date.now() - HOUR) }));
+  // The writer can make a note private again.
+  await assertSucceeds(setDoc(doc(ad, 'papers/p1/notes/admin1'), n('open note', false)));
+  await assertFails(getDoc(doc(m2, 'papers/p1/notes/admin1')));
+});
+
+test('the note index on users/<uid> is the member\'s own', async () => {
+  const m1 = as('mem1', 'm@x.org');
+  await assertSucceeds(setDoc(doc(m1, 'users/mem1'), { noted: { p1: 1700000000000 }, notedScan: 1700000000000, updatedAt: serverTimestamp() }, { merge: true }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { noted: 'p1', updatedAt: serverTimestamp() }, { merge: true }));
+  await assertFails(setDoc(doc(m1, 'users/mem1'), { notedScan: 'x', updatedAt: serverTimestamp() }, { merge: true }));
+  await assertFails(getDoc(doc(as('admin1', 'a@x.org'), 'users/mem1')));
+});
+
+test('private session notes are read by their owner only, admins included', async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'users/mem1/sessionNotes/s1'), { text: 'mine', updatedAt: new Date() }));
+  await assertSucceeds(getDoc(doc(as('mem1', 'm@x.org'), 'users/mem1/sessionNotes/s1')));
+  await assertSucceeds(getDocs(collection(as('mem1', 'm@x.org'), 'users/mem1/sessionNotes')));
+  await assertFails(getDoc(doc(as('admin1', 'a@x.org'), 'users/mem1/sessionNotes/s1')));
+  await assertFails(getDocs(collection(as('admin1', 'a@x.org'), 'users/mem1/sessionNotes')));
+  await assertFails(getDoc(doc(stranger(), 'users/mem1/sessionNotes/s1')));
 });
 
 test('reading lists: private for the maker only; shared lists take any member\'s papers; maker or admin renames and deletes', async () => {
