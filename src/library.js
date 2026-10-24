@@ -5,6 +5,7 @@ import {
   query, where, orderBy, limit, serverTimestamp,
 } from 'firebase/firestore';
 import { searchPapers, mergeHits } from './search.js';
+import { renderSlides, drawSlideGroup } from './decks.js';
 import { parseQuery, queryMatches, phrasesMatch, serverQuery, suggest, lastToken, facets, markHtml, abstractSnippet, HELP } from './query.js';
 import { findDoi, atotwDoi } from './doi.js';
 import { tidyAtotw } from './atotw.js';
@@ -115,6 +116,9 @@ export function renderLibraryRoute(r, ctx) {
   if (r.name === 'list' && r.arg) return renderList(c, r.arg, loadLibrary, paperItem);
   if (r.name === 'reindex') return renderReindex();
   if (r.name === 'duplicates') return renderDuplicates(c, loadLibrary);
+  // One search box for both sides: #/library?q= and #/library/slides?q= carry it across.
+  if (r.q) ui.q = r.q;
+  if (r.arg === 'slides') return renderSlides(c, { q: ui.q, search: serverSearch, setQ: (q) => { ui.q = q; }, seg: segHtml('slides') });
   return renderSearch();
 }
 
@@ -161,10 +165,13 @@ function paperItem(id, p, page, snippet) {
   return li;
 }
 
+// Library sides: Journals (papers) and Slides (teaching decks and session slides).
+const segHtml = (on) => `<nav class="seg" aria-label="Library"><a href="#/library"${on === 'journals' ? ' aria-current="page"' : ''}>Journals</a><a href="#/library/slides"${on === 'slides' ? ' aria-current="page"' : ''}>Slides</a></nav>`;
+
 async function renderSearch() {
   const t0 = performance.now();
   const admin = c.member.role === 'admin';
-  const page = c.el(`<section class="card lib"><h1>Library</h1>
+  const page = c.el(`<section class="card lib"><h1>Library</h1>${segHtml('journals')}
     <form id="sf" role="search" class="searchbox"><input id="q" type="search" aria-label="Search the library"
       placeholder="Search, or try tag: author: year:" autocomplete="off" enterkeyhint="search" aria-autocomplete="list" aria-controls="sugg">
       <button type="button" id="ssave" class="ssave" aria-label="Save this search" aria-pressed="false" hidden>${BOOKMARK}</button>
@@ -178,6 +185,7 @@ async function renderSearch() {
       <span><button type="button" id="sall" class="link"></button><button type="button" id="snone" class="link">None</button></span></div>
     <p id="selnote" class="muted" hidden></p>
     <p id="jobline" class="muted" hidden></p>
+    <div id="sgroup" class="sgroup" hidden></div>
     <ul id="res" class="list"></ul><p id="end" class="muted end"></p>
     <nav id="selbar" class="selbar" aria-label="Actions on selected papers" hidden></nav></section>`);
   c.view.replaceChildren(page);
@@ -285,7 +293,7 @@ async function renderSearch() {
     ui.shown = PAGE;
     redrawRows();
     const by = ui.searchSort === 'relevance' ? '' : ` · ${sortLabel(ui.searchSort)}`;
-    setCount(kept.length ? `${kept.length} found${by}${done ? '' : ', searching PDFs…'}` : done ? 'Nothing found.' : 'Searching PDFs…');
+    setCount(kept.length ? `${kept.length} found${by}${done ? '' : ', searching PDFs…'}` : done ? 'No papers found.' : 'Searching PDFs…');
     drawSel();
   };
   // Free words search (metadata here, PDF text and notes on the Worker); operators and -words narrow either way.
@@ -297,6 +305,8 @@ async function renderSearch() {
     drawSave(); markChips();
     const mine = ++seq;
     clearTimeout(timer);
+    const sgroup = $in(page, '#sgroup');
+    drawSlideGroup(c, sgroup, parsed.text ? ui.q : '');
     if (!parsed.text) { drawList(); return; }
     const local = searchPapers(cat.index, parsed, (id) => discussedAt(papers.get(id) || {}))
       .filter((h) => papers.has(h.paperId) && phrasesMatch(papers.get(h.paperId), parsed));
@@ -309,6 +319,7 @@ async function renderSearch() {
       const where = parsed.scope === 'notes' ? (h) => h.page === 0 : parsed.scope === 'pdf' ? (h) => h.page > 0 : () => true;
       const merged = mergeHits(local, server.hits.filter(where), (id) => papers.has(id));
       showHits(merged, true);
+      drawSlideGroup(c, sgroup, ui.q, server.hits);
       if (server.down) setCount(`${merged.length ? `${merged.length} found. ` : ''}PDF search unavailable right now.`);
     }, 250);
   };

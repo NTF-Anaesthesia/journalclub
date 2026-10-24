@@ -115,6 +115,7 @@ async function searchApi(request, url, env, member, fetchFn) {
   const m = /^\/api\/index\/([A-Za-z0-9_-]{1,64})(\/notes)?$/.exec(url.pathname);
   if (!m) return json({ error: 'Not found' }, 404);
   const [, paperId, notes] = m;
+  if (/^(deck|sess)_/.test(paperId)) return json({ error: 'Not found' }, 404); // slide text keys (slidesApi)
   const paper = await paperAs(member, paperId, fetchFn);
   if (!paper) return json({ error: 'No such paper' }, 404);
   // Any member may refresh the notes row: its text comes from Firestore, not from the caller.
@@ -138,25 +139,49 @@ async function searchApi(request, url, env, member, fetchFn) {
   return json({ error: 'Method not allowed' }, 405);
 }
 
-// Slides: any member reads them; the session's creator, presenter, coordinator and admins change them until it is locked.
-async function slidesApi(request, env, member, sid, which, fetchFn) {
+// Slide files: session slides (/api/slides/<session>) and teaching decks (/api/decks/<deck>). Any member reads them;
+// a session's creator, presenter, coordinator and admins change its slides until it is locked; a deck's maker and admins
+// change the deck. `/text` takes the slides' page text for search, kept in D1 as sess_<session> or deck_<deck> (paper
+// ids are Firestore auto ids, which never hold "_").
+const SLIDE_OWNERS = {
+  slides: { col: 'sessions', dir: 'slides', key: 'sess_', what: 'session',
+    may: (s, m) => m.role === 'admin' || ([field(s, 'createdBy'), field(s, 'presenterUid'), field(s, 'coordinatorUid')].includes(m.uid) && !field(s, 'locked')),
+    refuse: 'Only the creator, presenter, coordinator or an admin can change the slides' },
+  decks: { col: 'decks', dir: 'decks', key: 'deck_', what: 'deck',
+    may: (d, m) => m.role === 'admin' || field(d, 'createdBy') === m.uid,
+    refuse: 'Only the person who added the deck, or an admin, can change it' },
+};
+
+async function slidesApi(request, env, member, kind, sid, which, fetchFn) {
+  const o = SLIDE_OWNERS[kind];
   if (!env.FILES) return json({ error: 'File storage is not set up yet' }, 503);
-  if (request.method === 'GET' && (which === 'pdf' || which === 'original')) return serveSlides(env, sid, which);
-  if (which) return json({ error: 'Not found' }, 404);
-  const s = await docAs(member, `sessions/${sid}`, fetchFn);
-  if (!s) return json({ error: 'No such session' }, 404);
-  const mine = [field(s, 'createdBy'), field(s, 'presenterUid'), field(s, 'coordinatorUid')].includes(member.uid);
-  if (!(member.role === 'admin' || (mine && !field(s, 'locked')))) {
-    return json({ error: 'Only the creator, presenter, coordinator or an admin can change the slides' }, 403);
+  const base = `${o.dir}/${sid}`;
+  if (request.method === 'GET' && (which === 'pdf' || which === 'original')) return serveSlides(env, base, which);
+  if (which && which !== 'text') return json({ error: 'Not found' }, 404);
+  const s = await docAs(member, `${o.col}/${sid}`, fetchFn);
+  if (!s) return json({ error: `No such ${o.what}` }, 404);
+  if (!o.may(s, member)) return json({ error: o.refuse }, 403);
+  if (which === 'text') {
+    if (!env.SEARCH) return json({ error: 'Search is not set up yet' }, 503);
+    if (request.method === 'DELETE') { await removeFromIndex(env.SEARCH, o.key + sid); return json({ ok: true }); }
+    if (request.method !== 'PUT') return json({ error: 'Method not allowed' }, 405);
+    if (Number(request.headers.get('Content-Length') || 0) > 4 * 1024 * 1024) return json({ error: 'Too much text' }, 413);
+    const pages = cleanPages((await request.json().catch(() => ({}))).pages);
+    if (!pages) return json({ error: 'Send { pages: [text of slide 1, …] }' }, 400);
+    return json({ ok: true, pages: await indexPages(env.SEARCH, o.key + sid, pages) });
   }
-  if (request.method === 'DELETE') { await deleteSlides(env, sid); return json({ ok: true }); }
+  if (request.method === 'DELETE') {
+    await deleteSlides(env, base);
+    if (env.SEARCH) await removeFromIndex(env.SEARCH, o.key + sid);
+    return json({ ok: true });
+  }
   if (request.method === 'PUT') {
     if (Number(request.headers.get('Content-Length') || 0) > MAX_SLIDES) return json({ error: 'Slides are over 50 MB' }, 413);
     const body = await request.arrayBuffer();
     if (body.byteLength > MAX_SLIDES) return json({ error: 'Slides are over 50 MB' }, 413);
     let name = 'slides';
     try { name = decodeURIComponent(request.headers.get('X-File-Name') || 'slides'); } catch { /* keep the default */ }
-    const out = await storeSlides(env, sid, member.uid, body, name, fetchFn);
+    const out = await storeSlides(env, base, member.uid, body, name, fetchFn);
     return json(out.body, out.status);
   }
   if (request.method === 'POST') {
@@ -168,7 +193,7 @@ async function slidesApi(request, env, member, sid, which, fetchFn) {
     const cannot = 'Could not pull the slides from that link. Share it as "Anyone with the link can view", or upload the file.';
     if (!got) return json({ error: cannot }, 422);
     const pdf = src.pdf ? await pull(src.pdf, fetchFn) : null;
-    const out = await storeSlides(env, sid, member.uid, got.buf, src.name || got.name, fetchFn, pdf?.buf);
+    const out = await storeSlides(env, base, member.uid, got.buf, src.name || got.name, fetchFn, pdf?.buf);
     return out.status === 415 ? json({ error: cannot }, 422) : json(out.body, out.status);
   }
   return json({ error: 'Method not allowed' }, 405);
@@ -188,8 +213,8 @@ export async function api(request, env, fetchFn = fetch) {
   if (['/api/search', '/api/backfill', '/api/indexed'].includes(url.pathname) || url.pathname.startsWith('/api/index/') || url.pathname.startsWith('/api/enrich/') || url.pathname.startsWith('/api/firstpage/')) {
     return searchApi(request, url, env, member, fetchFn);
   }
-  const sl = /^\/api\/slides\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original))?$/.exec(url.pathname);
-  if (sl) return slidesApi(request, env, member, sl[1], sl[2], fetchFn);
+  const sl = /^\/api\/(slides|decks)\/([A-Za-z0-9_-]{1,64})(?:\/(pdf|original|text))?$/.exec(url.pathname);
+  if (sl) return slidesApi(request, env, member, sl[1], sl[2], sl[3], fetchFn);
 
   const m = /^\/api\/file\/([A-Za-z0-9_-]{1,64})$/.exec(url.pathname);
   if (!m) return json({ error: 'Not found' }, 404);

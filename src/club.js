@@ -9,6 +9,7 @@ import {
 import { dirty as dirtyLibrary, loadLibrary } from './catalogue.js';
 import { personIndex } from './people.js';
 import { isoDay, renderCalendar } from './calendar.js';
+import { indexSlideText, dirtySlides } from './decks.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
   sessionMarkdown, csvExport,
@@ -499,6 +500,8 @@ function slidesForm(snap, sf, done) {
       if (!r.ok) { msg.textContent = out.error || 'Could not save the slides.'; btn.disabled = false; return; }
       await updateDoc(snap.ref, { slidesFile: { name: out.name, size: out.size, kind: out.kind, pdf: out.pdf }, slides: '' });
       if (out.warning) alert(out.warning);
+      dirtySlides();
+      if (out.pdf) { msg.textContent = 'Making the slide text searchable…'; await indexSlideText('slides', sid, c); }
       done();
     } catch { msg.textContent = 'Could not save the slides.'; btn.disabled = false; }
   };
@@ -508,6 +511,7 @@ function slidesForm(snap, sf, done) {
       const r = await apiFetch(`/api/slides/${sid}`, { method: 'DELETE' }).catch(() => null);
       if (!r?.ok) { msg.textContent = 'Could not remove the slides.'; return; }
       await updateDoc(snap.ref, { slidesFile: {} });
+      dirtySlides();
       done();
     };
   }

@@ -239,3 +239,13 @@ a.cal-day:hover { background:var(--app-blush); }
 .cal-day.has-session .cal-num { color:#fff; }
 .cal-dot { width:5px; height:5px; border-radius:50%; background:currentColor; margin-top:2px; }
 .cal-hint { margin-top:0; }
+
+/* Library sides: Journals | Slides */
+.seg { display:flex; gap:2px; padding:2px; margin:0 0 var(--app-s3); border-radius:10px; background:var(--app-blush); }
+.seg a { flex:1; text-align:center; padding:8px var(--app-s2); border-radius:8px; text-decoration:none; color:var(--app-ink); font-weight:500; }
+.seg a[aria-current="page"] { background:var(--app-paper, #fff); color:var(--app-wine); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.sgroup { margin-bottom:var(--app-s3); }
+.sgroup .more { margin:var(--app-s1) 0 0; }
+.group-h { font-size:var(--app-t-footnote, .9rem); letter-spacing:.06em; text-transform:uppercase; color:var(--app-wine); margin:var(--app-s3) 0 var(--app-s1); }
+.deckpage .about { white-space:pre-wrap; }
+span.tag { cursor:default; }

@@ -87,17 +87,18 @@ export async function convertToPdf(buf, kind, key, fetchFn) {
   return pdf && slideKind(pdf) === 'pdf' ? pdf : null;
 }
 
-const keys = (sid) => ({ orig: `slides/${sid}/original`, pdf: `slides/${sid}/pdf` });
+// `base` is the R2 folder: slides/<session id> for session slides, decks/<deck id> for teaching decks.
+const keys = (base) => ({ orig: `${base}/original`, pdf: `${base}/pdf` });
 const cleanName = (n, kind) => {
   const base = String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 150) || 'slides';
   return base.toLowerCase().endsWith('.' + kind) ? base : `${base.replace(/\.(pdf|pptx?|key)$/i, '')}.${kind}`;
 };
 
 // Stores the file (and a PDF copy for PowerPoint). `pdfBuf` is a ready PDF from the source, if it gave one.
-export async function storeSlides(env, sid, uid, buf, name, fetchFn, pdfBuf = null) {
+export async function storeSlides(env, base, uid, buf, name, fetchFn, pdfBuf = null) {
   const kind = slideKind(buf);
   if (!kind) return { status: 415, body: { error: 'Not a PDF or PowerPoint file' } };
-  const k = keys(sid);
+  const k = keys(base);
   const fileName = cleanName(name, kind);
   await Promise.all([env.FILES.delete(k.orig), env.FILES.delete(k.pdf)]);
   let pdf = kind === 'pdf' ? buf : (pdfBuf && slideKind(pdfBuf) === 'pdf' ? pdfBuf : null);
@@ -114,8 +115,8 @@ export async function storeSlides(env, sid, uid, buf, name, fetchFn, pdfBuf = nu
   return { status: 200, body: out };
 }
 
-export async function serveSlides(env, sid, which) {
-  const k = keys(sid);
+export async function serveSlides(env, base, which) {
+  const k = keys(base);
   const obj = await env.FILES.get(which === 'pdf' ? k.pdf : k.orig);
   if (!obj) return new Response(JSON.stringify({ error: 'No file' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
   const name = obj.customMetadata?.name || (which === 'pdf' ? 'slides.pdf' : 'slides');
@@ -125,4 +126,4 @@ export async function serveSlides(env, sid, which) {
   } });
 }
 
-export const deleteSlides = (env, sid) => { const k = keys(sid); return Promise.all([env.FILES.delete(k.orig), env.FILES.delete(k.pdf)]); };
+export const deleteSlides = (env, base) => { const k = keys(base); return Promise.all([env.FILES.delete(k.orig), env.FILES.delete(k.pdf)]); };

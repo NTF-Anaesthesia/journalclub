@@ -478,3 +478,23 @@ test('config: members read the Teams link; only admins write it', async () => {
   await assertFails(setDoc(doc(as('mem1', 'm@x.org'), 'config/discussion'), { fields: [], updatedBy: 'mem1', updatedAt: serverTimestamp() }));
   await assertFails(setDoc(doc(as('admin1', 'a@x.org'), 'config/other'), { updatedBy: 'admin1', updatedAt: serverTimestamp() }));
 });
+
+test('decks: any member adds one as its maker; the maker and admins edit or delete it; strangers read nothing', async () => {
+  const m = as('mem1', 'm@x.org');
+  const deck = { title: 'Difficult airway', tags: ['airway'], by: 'M', about: '', date: null, slidesFile: {}, createdBy: 'mem1', createdAt: serverTimestamp(), changedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(doc(m, 'decks/d1'), deck));
+  await assertFails(setDoc(doc(m, 'decks/d2'), { ...deck, createdBy: 'admin1' }));
+  await assertFails(setDoc(doc(m, 'decks/d3'), { ...deck, title: '' }));
+  await assertFails(setDoc(doc(m, 'decks/d4'), { ...deck, extra: 1 }));
+  await assertSucceeds(updateDoc(doc(m, 'decks/d1'), { slidesFile: { name: 'a.pdf', size: 10, kind: 'pdf', pdf: true }, changedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(m, 'decks/d1'), { createdBy: 'mem2' }));
+  await assertFails(updateDoc(doc(m, 'decks/d1'), { slidesFile: { name: 'a.pdf', kind: 'docx' } }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'members/mem2'), { email: 'o@x.org', name: 'O', role: 'member', inviteId: 'seed' }));
+  const o = as('mem2', 'o@x.org');
+  await assertSucceeds(getDoc(doc(o, 'decks/d1')));
+  await assertFails(updateDoc(doc(o, 'decks/d1'), { title: 'Mine now' }));
+  await assertFails(deleteDoc(doc(o, 'decks/d1')));
+  await assertFails(getDoc(doc(stranger(), 'decks/d1')));
+  await assertSucceeds(updateDoc(doc(as('admin1', 'a@x.org'), 'decks/d1'), { title: 'Airway', changedAt: serverTimestamp() }));
+  await assertSucceeds(deleteDoc(doc(m, 'decks/d1')));
+});

@@ -1,4 +1,4 @@
-// In-app PDF reader: #/read/<paper>/<page>?q=<term>. Continuous scroll, pinch or +/- zoom, page jump, the search term
+// In-app PDF reader: #/read/<paper>/<page>?q=<term> (slides: #/view/<deck_id or sess_id>/<page>). Continuous scroll, pinch or +/- zoom, page jump, the search term
 // highlighted, last page remembered per member on this device. The PDF comes from the offline cache when it is there,
 // else from the Worker in Range chunks (and is then kept for offline use). Streaming is off on purpose: the plain
 // network loader always opens with a small Range request, so only the chunks the first page needs are downloaded.
@@ -34,12 +34,22 @@ export const fileName = (title) => `${String(title || 'paper').replace(/[\\/:*?"
 // Words of the search term worth highlighting (lower case, 2+ letters).
 export const termWords = (q) => [...new Set(String(q || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2))].slice(0, 6);
 
+// #/view/deck_<deck>/<page> and #/view/sess_<session>/<page> open slides the same way (their search keys, see the Worker).
+export function readerSource(r) {
+  const m = r.name === 'view' ? /^(deck|sess)_(.+)$/.exec(r.arg || '') : null;
+  if (!m) return { id: r.arg, file: `/api/file/${r.arg}`, back: `#/paper/${r.arg}`, backText: 'Back to paper', doc: ['papers', r.arg], what: 'paper' };
+  const deck = m[1] === 'deck';
+  return { id: r.arg, file: `/api/${deck ? 'decks' : 'slides'}/${m[2]}/pdf`, back: deck ? `#/deck/${m[2]}` : `#/session/${m[2]}`,
+    backText: deck ? 'Back to the deck' : 'Back to the session', doc: [deck ? 'decks' : 'sessions', m[2]], what: 'slides' };
+}
+
 export async function renderReader(r, c, apiFetch) {
-  const id = r.arg;
+  const src = readerSource(r);
+  const id = src.id;
   const words = termWords(r.q);
   const page = c.el(`<section class="card reader">
     <div class="reader-bar">
-      <a href="#/paper/${c.esc(id)}" id="rback">← Back to paper</a>
+      <a href="${c.esc(src.back)}" id="rback">← ${src.backText}</a>
       <a href="#/paper/${c.esc(id)}" id="rsess" hidden>Session</a>
       <span class="badge" id="roff" hidden>Offline copy</span>
       <span class="reader-share" id="rshare" hidden><button type="button" id="rdl">Download</button><button type="button" id="rsend">Send</button></span>
@@ -55,14 +65,15 @@ export async function renderReader(r, c, apiFetch) {
   const say = (t) => { $('#rmsg').textContent = t; $('#rmsg').hidden = !t; };
 
   // Paper title and its latest session (both optional: the reader still works without them).
-  let title = 'paper';
-  getDoc(doc(c.db, 'papers', id)).then((s) => {
+  let title = src.what;
+  getDoc(doc(c.db, ...src.doc)).then((s) => {
     if (!s.exists()) return;
-    title = s.data().title || title;
-    $('#rtitle').textContent = s.data().title || 'PDF';
-    document.title = `${s.data().title || 'PDF'} · Reader · Journal club`;
+    const t = s.data().title || (s.data().paperTitle ? `Slides: ${s.data().paperTitle}` : '');
+    title = t || title;
+    $('#rtitle').textContent = t || 'PDF';
+    document.title = `${t || 'PDF'} · Reader · Journal club`;
   }).catch(() => {});
-  getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id))).then((ss) => {
+  if (src.what === 'paper') getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id))).then((ss) => {
     const latest = ss.docs.map((d) => ({ id: d.id, t: d.data().date?.toMillis?.() || 0 })).sort((a, b) => b.t - a.t)[0];
     if (latest) { const a = $('#rsess'); a.href = `#/session/${latest.id}`; a.hidden = false; }
   }).catch(() => {});
@@ -76,7 +87,7 @@ export async function renderReader(r, c, apiFetch) {
   else {
     try {
       const token = await c.user.getIdToken();
-      source = { url: `/api/file/${id}`, httpHeaders: { Authorization: `Bearer ${token}` }, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
+      source = { url: src.file, httpHeaders: { Authorization: `Bearer ${token}` }, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
     } catch { say('Could not open the PDF. You may be offline and it is not saved on this device.'); return; }
   }
   if (!page.isConnected) return;
@@ -86,13 +97,13 @@ export async function renderReader(r, c, apiFetch) {
   let pdf;
   const task = getDocument(source);
   try { pdf = await task.promise; } catch (e) {
-    say(e?.name === 'MissingPDFException' || e?.status === 404 ? 'This paper has no PDF.' : hit ? 'This PDF could not be read.' : 'Could not open the PDF. You may be offline and it is not saved on this device.');
+    say(e?.name === 'MissingPDFException' || e?.status === 404 ? (src.what === 'paper' ? 'This paper has no PDF.' : 'These slides have no PDF copy.') : hit ? 'This PDF could not be read.' : 'Could not open the PDF. You may be offline and it is not saved on this device.');
     return;
   }
   // The whole file, for Download and Send. Fetched early so Send can share at once (iOS needs the tap still fresh).
   let bytes = hit ? Promise.resolve(hitBuf) : null;
   if (!hit) {
-    bytes = apiFetch(`/api/file/${id}`).then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error('no file'))));
+    bytes = apiFetch(src.file).then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error('no file'))));
     bytes.then(async (buf) => {
       if (!page.isConnected) return;
       await keep(id, buf.slice(0));
@@ -119,11 +130,11 @@ export async function renderReader(r, c, apiFetch) {
       }
       return;
     }
-    // No file sharing here (most desktop browsers): share or copy the paper's link instead (members only).
-    const link = `${location.origin}/#/paper/${id}`;
+    // No file sharing here (most desktop browsers): share or copy the page's link instead (members only).
+    const link = `${location.origin}/${src.back}`;
     try {
       if (navigator.share) await navigator.share({ title, url: link });
-      else { await navigator.clipboard.writeText(link); say('This browser cannot send files: link to the paper copied.'); }
+      else { await navigator.clipboard.writeText(link); say(`This browser cannot send files: link to the ${src.what} copied.`); }
     } catch { /* cancelled */ }
   };
   $('#rshare').hidden = false;

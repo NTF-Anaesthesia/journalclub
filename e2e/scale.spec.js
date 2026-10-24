@@ -86,7 +86,7 @@ test('1000 papers: first page under 2 s, paged list, PDF word search from the Wo
   await page.getByLabel('Search the library').fill('trial 0042');
   await expect(page.locator('#res li').first()).toContainText('Seeded trial 0042');
   await page.getByLabel('Search the library').fill('quokkaword');
-  await expect(page.getByText('Nothing found.')).toBeVisible();
+  await expect(page.getByText('No papers found.')).toBeVisible();
   await page.getByLabel('Search the library').fill('');
 
   // Repeat open: the newest 50 paint from this device first (under 1 s), then the catalogue comes from the
