@@ -63,7 +63,8 @@ test('Fill 20 papers, reload mid-run, Resume finishes only the rest and the coun
   const prog = page.getByRole('dialog', { name: 'Filling papers' });
   await expect(prog.getByRole('heading', { name: `Done: ${N} papers` })).toBeVisible({ timeout: 30000 });
   await expect(prog.locator('li', { hasText: 'No PDF text' })).toContainText(String(N));
-  expect(seen.sort()).toEqual([...saved.ids].sort()); // only the unfinished ones, none twice
+  // Only the unfinished ones, never a finished paper (a request from before the reload may be seen once more).
+  expect([...new Set(seen)].sort()).toEqual([...saved.ids].sort());
   await expect(bar).toBeHidden();
   expect(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.includes(':job')))).toEqual([]);
 });
