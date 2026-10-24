@@ -1,0 +1,38 @@
+# Releases firestore.rules to the Firebase project journalclub-anantf when the file changes on main (or by hand:
+# Run workflow). The rules test runs in the emulator first. It signs in with GitHub's OIDC token (Workload Identity
+# Federation: only this repo may use the provider) as a service account that can only change rules, so no key is stored.
+name: Deploy Firestore rules
+
+on:
+  push:
+    branches: [main]
+    paths: ['firestore.rules']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-firestore-rules
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - name: Rules test (emulator)
+        run: npm run test:rules
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/86924335772/locations/global/workloadIdentityPools/github/providers/journalclub-repo
+          service_account: firebase-rules-deployer@journalclub-anantf.iam.gserviceaccount.com
+      - name: Deploy firestore.rules to journalclub-anantf
+        run: npx firebase deploy --only firestore:rules --project journalclub-anantf --non-interactive
