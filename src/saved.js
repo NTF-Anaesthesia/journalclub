@@ -1,7 +1,8 @@
 // Saved tab (#/lists): Starred, Recently opened, Private lists; and one list's page (#/list/<id>). Lists are only ever
 // the maker's; papers for everyone are grouped with shared tags.
-import { doc, getDoc, addDoc, deleteDoc, updateDoc, collection, serverTimestamp, arrayRemove } from 'firebase/firestore';
-import { loadLists, loadRecent, loadStarred, setStarred, starId } from './prefs.js';
+import { doc, getDoc, getDocs, addDoc, deleteDoc, updateDoc, collection, serverTimestamp, arrayRemove } from 'firebase/firestore';
+import { loadLists, loadRecent, loadStarred, setStarred, starId, loadNoted, scanNoted } from './prefs.js';
+import { sortNotes, filterNotes, millis } from './notes.js';
 
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
@@ -9,6 +10,8 @@ export async function renderSaved(c, loadLibrary, paperItem) {
   const page = c.el(`<section class="card"><h1>Saved</h1>
     <ul class="list nav-list" id="sstar"></ul>
     <h2>Recently opened</h2><ul class="list" id="srecent"><li class="muted">Loading…</li></ul>
+    <h2>My notes</h2><input type="search" id="nsearch" placeholder="Search my notes" aria-label="Search my notes" autocomplete="off">
+    <ul class="list" id="mynotes"><li class="muted">Loading…</li></ul>
     <h2>Private lists</h2><p class="muted">Only you see your lists. To group papers for everyone, give them a shared tag.</p>
     <ul class="list nav-list" id="smine"></ul>
     <h2>New private list</h2><form id="nl" class="stack"><label>Name <input id="lname" required maxlength="80" placeholder="e.g. Exam revision"></label>
@@ -35,6 +38,47 @@ export async function renderSaved(c, loadLibrary, paperItem) {
   const row = (l) => c.el(`<li><a href="#/list/${c.esc(l.id)}">${c.esc(l.name)} <span class="muted">&nbsp;· ${plural(l.paperIds.filter((id) => lib.papers.has(id)).length, 'paper')}</span></a></li>`);
   const mine = lists.filter((l) => !l.starred);
   page.querySelector('#smine').append(...(mine.length ? mine.map(row) : [c.el('<li class="muted">None yet.</li>')]));
+  myNotes(c, page, lib);
+}
+
+// All my paper notes (found through the small index on my user doc) and my private session notes, newest first.
+async function myNotes(c, page, lib) {
+  const ul = page.querySelector('#mynotes'), uid = c.user.uid;
+  const put = (msg) => ul.replaceChildren(c.el(`<li class="muted">${msg}</li>`));
+  let rows = [];
+  try {
+    const noted = await scanNoted(c.db, uid, lib.papers.keys()).catch(() => loadNoted(c.db, uid));
+    const ids = Object.keys(noted);
+    for (let i = 0; i < ids.length; i += 10) {
+      const got = await Promise.all(ids.slice(i, i + 10).map((pid) => getDoc(doc(c.db, 'papers', pid, 'notes', uid)).catch(() => null)));
+      got.forEach((d, j) => {
+        const pid = ids[i + j], n = d?.exists() ? d.data() : null;
+        if (!n?.text) return;
+        const p = lib.papers.get(pid);
+        rows.push({ kind: 'paper', id: pid, title: p ? p.title : 'Removed paper', text: n.text, ms: millis(n.updatedAt) || noted[pid], shared: n.shared === true, href: p ? `#/paper/${pid}` : '' });
+      });
+    }
+    // Private session notes are written by the session page; none (or no access yet) simply means no rows.
+    const sn = await getDocs(collection(c.db, 'users', uid, 'sessionNotes')).catch(() => null);
+    const sess = await Promise.all((sn?.docs || []).filter((d) => d.data().text).map(async (d) => {
+      const s = await getDoc(doc(c.db, 'sessions', d.id)).catch(() => null);
+      const sd = s?.exists() ? s.data() : null;
+      const p = sd && lib.papers.get(sd.paperId);
+      const when = sd?.date?.toDate ? sd.date.toDate().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+      return { kind: 'session', id: d.id, title: p ? p.title : sd?.paperTitle || 'Journal club session', text: d.data().text, ms: millis(d.data().updatedAt), shared: false, href: sd ? `#/session/${d.id}` : '', when };
+    }));
+    rows = sortNotes([...rows, ...sess]);
+  } catch (e) { console.warn('my notes', e); put('Could not load your notes.'); return; }
+  if (!page.isConnected) return;
+  const draw = () => {
+    const shown = filterNotes(rows, page.querySelector('#nsearch').value);
+    if (!shown.length) { put(rows.length ? 'No note matches.' : 'Notes you write on papers and sessions show here.'); return; }
+    ul.replaceChildren(...shown.map((r) => c.el(`<li class="mynote"><${r.href ? `a href="${c.esc(r.href)}"` : 'span'}>${c.esc(r.title)}</${r.href ? 'a' : 'span'}>
+      <span class="muted">${r.kind === 'session' ? `Session note${r.when ? ' · ' + c.esc(r.when) : ''} · Only me` : `Paper note · ${r.shared ? 'Members' : 'Only me'}`}</span>
+      <span class="note-snippet">${c.esc(r.text)}</span></li>`)));
+  };
+  page.querySelector('#nsearch').oninput = draw;
+  draw();
 }
 
 export async function renderList(c, lid, loadLibrary, paperItem) {

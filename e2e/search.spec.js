@@ -38,8 +38,8 @@ test('search: operators, OR, phrases, exclusions; suggestions; saved search chip
   const box = page.getByLabel('Search the library');
   const titles = () => page.locator('#res li.paper > a').allInnerTexts();
 
-  // Slides: an uploaded deck opens from a button, a linked one is a link; both beside "Presented".
-  await expect(page.locator('#res li.paper', { hasText: 'Sugammadex' }).locator('.pills .slides-pill')).toHaveText('Slides');
+  // Slides: an uploaded deck opens in the reader, a linked one outside; both beside "Presented".
+  await expect(page.locator('#res li.paper', { hasText: 'Sugammadex' }).locator('.pills a.pdf-pill', { hasText: 'Slides' })).toHaveAttribute('href', '#/view/sess_sx1');
   await expect(page.locator('#res li.paper', { hasText: 'dural' }).locator('.pills a.pdf-pill', { hasText: 'Slides' })).toHaveAttribute('href', 'https://example.org/deck');
   await expect(page.locator('#res li.paper', { hasText: 'dosing' }).locator('.pills', { hasText: 'Slides' })).toHaveCount(0);
 

@@ -50,10 +50,19 @@ const paperAs = (member, paperId, fetchFn) => docAs(member, `papers/${paperId}`,
 const getAs = docAs;const docId = (d) => d.name.split('/').pop();
 const strings = (v) => (v?.arrayValue?.values || []).map((x) => x.stringValue ?? '');
 
-// The notes on one paper, read as the caller (members read all notes).
+// The shared notes on one paper, read as the caller. A private note (shared is not true) is never indexed, not even
+// for its writer, so search shows the same notes to everyone. The query filters on shared == true because the rules
+// refuse a list that could include another member's private note.
 async function noteTexts(member, paperId, fetchFn) {
-  const out = await getAs(member, `papers/${paperId}/notes?pageSize=300`, fetchFn);
-  return (out?.documents || []).map((d) => field(d, 'text')).filter(Boolean);
+  const r = await fetchFn(`${FIRESTORE}/papers/${paperId}:runQuery`, {
+    method: 'POST', headers: { Authorization: `Bearer ${member.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'notes' }], limit: 300,
+      where: { fieldFilter: { field: { fieldPath: 'shared' }, op: 'EQUAL', value: { booleanValue: true } } },
+    } }),
+  });
+  if (!r.ok) throw new Error('Could not read the notes');
+  return (await r.json()).map((x) => x.document && field(x.document, 'text')).filter(Boolean);
 }
 
 // Admin, one batch per call so a call stays within the Worker's subrequest and D1 query limits.
@@ -75,8 +84,10 @@ async function backfill(member, env, body, fetchFn) {
   const out = await getAs(member, `papers?pageSize=10&mask.fieldPaths=title${token}`, fetchFn);
   if (!out) return json({ error: 'Could not read the papers' }, 502);
   for (const d of out.documents || []) {
-    const texts = await noteTexts(member, docId(d), fetchFn);
-    if (texts.length) { await indexNotes(env.SEARCH, docId(d), texts); indexed++; }
+    const texts = await noteTexts(member, docId(d), fetchFn).catch(() => null);
+    if (!texts) continue; // could not read: leave the row as it is
+    await indexNotes(env.SEARCH, docId(d), texts); // no shared notes clears the row
+    if (texts.length) indexed++;
   }
   return json({ phase, indexed, next: out.nextPageToken ? { phase, pageToken: out.nextPageToken } : null });
 }
@@ -120,7 +131,9 @@ async function searchApi(request, url, env, member, fetchFn) {
   if (!paper) return json({ error: 'No such paper' }, 404);
   // Any member may refresh the notes row: its text comes from Firestore, not from the caller.
   if (notes && request.method === 'POST') {
-    await indexNotes(env.SEARCH, paperId, await noteTexts(member, paperId, fetchFn));
+    let texts;
+    try { texts = await noteTexts(member, paperId, fetchFn); } catch { return json({ error: 'Could not read the notes' }, 502); }
+    await indexNotes(env.SEARCH, paperId, texts);
     return json({ ok: true });
   }
   if (notes) return json({ error: 'Method not allowed' }, 405);

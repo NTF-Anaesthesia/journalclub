@@ -14,7 +14,7 @@ import { editSheet, releaseHand } from './edit.js';
 import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, selectAll, SELECT_CAP } from './filters.js';
-import { loadStarred, setStarred, loadRecent, touchRecent, loadLists, loadSearches, setSearchSaved } from './prefs.js';
+import { loadStarred, setStarred, loadRecent, touchRecent, loadLists, loadSearches, setSearchSaved, loadNoted, setNoted, scanNoted } from './prefs.js';
 import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { renderSaved, renderList } from './saved.js';
 import { isOffline, forget as forgetOffline, syncStarred } from './offline.js';
@@ -30,7 +30,7 @@ const SORT_KEY = 'jc.sort';
 const savedSort = () => { try { const v = localStorage.getItem(SORT_KEY); return SORTS.some(([k]) => k === v) ? v : 'discussed'; } catch { return 'discussed'; } };
 const ui = { q: '', filter: emptyFilter(), sort: savedSort(), searchSort: 'relevance', shown: PAGE, pendingSel: null };
 // What rows show beyond the paper: the search words to mark, and session slides (sid -> { pdf } or { url }).
-const rowCtx = { words: [], slides: new Map() };
+const rowCtx = { words: [], slides: new Map(), noted: {} }; // noted: paperId -> ms of my note (a dot on the row)
 const RECENT_Q = 'jc.recentSearches';
 const recentSearches = () => { try { return JSON.parse(localStorage.getItem(RECENT_Q) || '[]'); } catch { return []; } };
 const rememberSearch = (q) => { try { localStorage.setItem(RECENT_Q, JSON.stringify([q, ...recentSearches().filter((x) => x !== q)].slice(0, 8))); } catch { /* private */ } };
@@ -93,14 +93,7 @@ function slidesFor(p) {
   for (const e of [...(p.presented || [])].reverse()) { const m = rowCtx.slides.get(e.sid); if (m) return { sid: e.sid, ...m }; }
   return null;
 }
-// The slides' PDF opens in a new tab (as on the session page).
-async function openSlides(sid) {
-  const w = window.open('', '_blank'); // opened before the await so pop-up blockers allow it
-  const r = await apiFetch(`/api/slides/${sid}/pdf`).catch(() => null);
-  if (!r?.ok) { w?.close(); alert('Could not open the slides.'); return; }
-  const url = URL.createObjectURL(await r.blob());
-  if (w) w.location.href = url; else location.href = url;
-}
+const NOTE_DOT = '<span class="note-dot" role="img" aria-label="You have a note" title="You have a note"></span>';
 const BOOKMARK = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>';
 const SLIDES_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M12 16v4M8 20h8"/></svg>';
 
@@ -152,12 +145,10 @@ function paperItem(id, p, page, snippet) {
   const sl = slidesFor(p);
   const slides = !sl ? '' : sl.url
     ? `<a class="pdf-pill" href="${c.esc(sl.url)}" target="_blank" rel="noopener" aria-label="Open the session slides">${SLIDES_ICON}Slides</a>`
-    : `<button type="button" class="pdf-pill slides-pill" data-sid="${c.esc(sl.sid)}" aria-label="Open the session slides">${SLIDES_ICON}Slides</button>`;
+    : `<a class="pdf-pill" href="#/view/sess_${c.esc(sl.sid)}" aria-label="Open the session slides">${SLIDES_ICON}Slides</a>`;
   const pills = pdf + off + badge + slides + tags;
-  const li = c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${markHtml(p.title, ws, c.esc)}</a>${authors}
+  const li = c.el(`<li class="paper" data-id="${c.esc(id)}"><a href="${href}">${markHtml(p.title, ws, c.esc)}${rowCtx.noted[id] ? NOTE_DOT : ''}</a>${authors}
     ${meta || noAbs || hit ? `<span class="muted">${c.esc(meta)}${noAbs}${hit}</span>` : ''}${snip}${pills ? `<span class="pills">${pills}</span>` : ''}</li>`);
-  const sp = li.querySelector('.slides-pill');
-  if (sp) sp.onclick = (e) => { if (document.body.classList.contains('selecting')) return; e.preventDefault(); e.stopPropagation(); openSlides(sp.dataset.sid); };
   li.querySelectorAll('a.tag').forEach((a) => { a.onclick = (e) => {
     if (li.classList.contains('selecting') || document.body.classList.contains('selecting')) return; // a tap while selecting ticks the row
     e.preventDefault(); showTag(a.dataset.tag);
@@ -229,6 +220,9 @@ async function renderSearch() {
   // Session slides and saved searches arrive on their own and redraw what they change.
   const slideIds = () => new Set([...papers].filter(([, p]) => slidesFor(p)).map(([id]) => id));
   withTimeout(loadSlides(), 8000, 'slides').then((m) => { rowCtx.slides = m; if (!page.isConnected) return; x.slides = slideIds(); show(); }, why('slidesError'));
+  // The dot on rows where I have a note comes from one small doc; notes from before it existed are found once.
+  withTimeout(loadNoted(c.db, c.user.uid), 8000, 'noted').then((n) => { rowCtx.noted = n; if (page.isConnected && Object.keys(n).length) show(); }, why('notedError'));
+  real.then((full) => scanNoted(c.db, c.user.uid, full.papers.keys())).then((n) => { rowCtx.noted = n; if (page.isConnected && Object.keys(n).length) show(); }).catch(why('notedScanError'));
   withTimeout(loadSearches(c.db, c.user.uid), 8000, 'searches').then((l) => { saved = l; if (page.isConnected) { drawChips(); drawSave(); } }, why('searchesError'));
   if (cat.partial) {
     real.then((full) => { if (page.isConnected && cat.partial) { cat = full; papers = full.papers; redraw(); } })
@@ -756,15 +750,31 @@ async function renderImport() {
   };
 }
 
+// The sessions a paper was presented at, newest first, with their take-home points.
+async function loadPaperSessions(id) {
+  const ss = await getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id)));
+  const sessions = ss.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.date.toMillis() - a.date.toMillis());
+  const points = await Promise.all(sessions.map((s) => getDocs(collection(c.db, 'sessions', s.id, 'points'))));
+  return { sessions, points };
+}
+// The Slides pill of a session: its PDF opens in the in-app reader; a link-only deck opens outside.
+const slidesPill = (s) => (s.slidesFile?.pdf ? `<a class="pdf-pill" href="#/view/sess_${c.esc(s.id)}" aria-label="Open the slides">${SLIDES_ICON}Slides</a>`
+  : safeUrl(s.slides) ? `<a class="pdf-pill" href="${c.esc(safeUrl(s.slides))}" target="_blank" rel="noopener" aria-label="Open the slides">${SLIDES_ICON}Slides</a>` : '');
+
 async function renderPaper(id, hitPage) {
   const snap = await getDoc(doc(c.db, 'papers', id));
   if (!snap.exists()) { forget(id); c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/library">Library</a></p></section>')); return; }
   const p = cleanPaper(snap.data());
-  const [ns, lists, starred] = await Promise.all([getDocs(collection(c.db, 'papers', id, 'notes')),
+  // My note by its path; others' notes only through a query on shared == true (the rules never show a private note).
+  const [ns, myDoc, lists, starred] = await Promise.all([
+    getDocs(query(collection(c.db, 'papers', id, 'notes'), where('shared', '==', true))).catch(() => null),
+    getDoc(doc(c.db, 'papers', id, 'notes', c.user.uid)).catch(() => null),
     loadLists(c.db, c.user.uid, c.member.role === 'admin').catch(() => []), loadStarred(c.db, c.user.uid)]);
   touchRecent(c.db, c.user.uid, id);
-  const notes = ns.docs.map((d) => ({ uid: d.id, ...d.data() }));
-  const mine = notes.find((n) => n.uid === c.user.uid);
+  const notes = (ns?.docs || []).map((d) => ({ uid: d.id, ...d.data() })).filter((n) => n.uid !== c.user.uid);
+  let mine = myDoc?.exists() ? myDoc.data() : null;
+  // The sessions of this paper load once: the card at the top and the Journal club section below both use them.
+  const sessionsP = loadPaperSessions(id);
   document.title = `${p.title} · Paper · Journal club`;
   const links = [
     p.doi && `<a href="https://doi.org/${c.esc(p.doi)}" target="_blank" rel="noopener">Publisher page</a>`,
@@ -776,28 +786,34 @@ async function renderPaper(id, hitPage) {
   const page = c.el(`<section class="card paperpage"><p class="eyebrow">PAPER</p><p class="back"><a href="#/library">← Library</a></p><h1>${c.esc(p.title)}</h1>
     <p class="muted meta">${[meta, doiLink].filter(Boolean).join(' · ')}</p>
     ${(p.tags || []).length ? `<p class="tagrow">${(p.tags || []).map((t) => `<span class="tag">${c.esc(t)}</span>`).join(' ')}</p>` : ''}
+    <div id="jccard"></div>
     ${p.abstract ? `<div class="abstract-open"><h2>Abstract</h2>${ABSTRACT_NOTE[p.abstractSource] ? `<p class="muted">${ABSTRACT_NOTE[p.abstractSource]}</p>` : ''}<div class="abstract">${abstractSections(p.abstract)
       .map((x) => `<p>${x.label ? `<strong>${c.esc(x.label)}:</strong> ` : ''}${c.esc(x.text)}</p>`).join('')}</div></div>` : ''}
-    <p class="actions compact"><button type="button" id="star" class="star-btn"></button><button type="button" id="addto">Lists and tags…</button><button type="button" id="editd">Edit details</button></p>
+    <p class="actions compact">${p.file ? '<button type="button" id="openpdf" class="primary">Open PDF</button>' : ''}<button type="button" id="star" class="star-btn"></button><button type="button" id="addto">Lists and tags…</button><button type="button" id="editd">Edit details</button></p>
     <p class="muted" id="inlists"></p>
     ${links ? `<p class="links">${links}</p>` : ''}
     ${p.why ? `<p><strong>Why read it:</strong> ${c.esc(p.why)}</p>` : ''}
     ${(p.manual || []).length ? `<p class="muted" id="handnote">Edited by hand (${c.esc(p.manual.join(', '))}). <button type="button" class="link" id="unhand">Let Refresh update these again</button></p>` : ''}
     <h2>Full Text PDF</h2><div id="file"></div>
-    <h2>Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
+    <h2 id="jch">Journal club</h2><div id="jc"><p class="muted">Loading…</p></div>
     <h2>Notes</h2>
     <form id="nf" class="stack"><label>Your note <textarea id="note" rows="3" maxlength="4000"></textarea></label>
-      <button class="primary">Save note</button></form>
-    <ul id="notes" class="list"></ul>
+      <fieldset class="note-vis"><legend>Who can read it</legend>
+        <label><input type="radio" name="vis" value="me"> Only me</label>
+        <label><input type="radio" name="vis" value="members"> Members</label></fieldset>
+      <p class="muted" id="visnote"></p>
+      <button class="primary">Save note</button><span class="muted" id="notesaved" role="status"></span></form>
+    <div id="othernotes"></div>
     <div id="edit"></div></section>`);
   c.view.replaceChildren(page);
 
   // PDF: open, or upload.
   const file = $in(page, '#file');
   if (p.file) {
-    const open = c.el(`<button class="primary">Open PDF${hitPage ? ` at page ${hitPage}` : ''}</button>`);
+    const open = $in(page, '#openpdf');
+    open.textContent = hitPage ? `Open PDF at page ${hitPage}` : 'Open PDF';
     open.onclick = () => { location.hash = `#/read/${id}${hitPage ? '/' + hitPage : ''}`; };
-    file.append(open, c.el(`<span class="muted"> ${p.file.pages} pages</span>`));
+    file.append(c.el(`<span class="muted">${p.file.pages} pages</span>`));
     if (isOffline(id)) file.append(c.el(' <span class="offline-badge" title="Saved on this device">Offline copy</span>'));
   } else if (mayEdit(p)) {
     const up = c.el(`<form id="uf" class="stack">
@@ -824,34 +840,56 @@ async function renderPaper(id, hitPage) {
     file.append(c.el('<p class="muted">No PDF. The person who added the paper can upload one.</p>'));
   }
 
-  // Notes.
+  // Notes: mine (Only me or Members) and the notes other members chose to share.
   if (mine) $in(page, '#note').value = mine.text;
-  const nl = $in(page, '#notes');
-  notes.filter((n) => n.text).forEach((n) => nl.append(c.el(`<li><span><strong>${c.esc(n.name || 'Member')}</strong><br>${c.esc(n.text)}</span></li>`)));
+  const visNote = () => {
+    const shared = page.querySelector('input[name=vis]:checked').value === 'members';
+    $in(page, '#visnote').textContent = shared ? 'Every member can read this note, and it can be found in search.' : 'Only you can read this note. Search does not index it.';
+  };
+  page.querySelector(`input[name=vis][value=${mine?.shared === true ? 'members' : 'me'}]`).checked = true;
+  page.querySelectorAll('input[name=vis]').forEach((r) => { r.onchange = visNote; });
+  visNote();
+  if (notes.some((n) => n.text)) {
+    const on = $in(page, '#othernotes');
+    on.append(c.el('<h3>Members\' notes</h3>'));
+    const nl = c.el('<ul class="list"></ul>');
+    notes.filter((n) => n.text).forEach((n) => nl.append(c.el(`<li><span><strong>${c.esc(n.name || 'Member')}</strong><br>${c.esc(n.text)}</span></li>`)));
+    on.append(nl);
+  }
   $in(page, '#nf').onsubmit = async (e) => {
     e.preventDefault();
-    await setDoc(doc(c.db, 'papers', id, 'notes', c.user.uid), {
-      text: $in(page, '#note').value.trim(), rating: 0, // ratings are retired; the rules still expect the field
-      name: c.member.name || c.user.displayName || c.user.email, updatedAt: serverTimestamp(),
-    });
-    apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // notes are searched server-side
-    renderPaper(id, hitPage);
+    const text = $in(page, '#note').value.trim(), status = $in(page, '#notesaved');
+    status.textContent = '';
+    try {
+      if (text) {
+        const shared = page.querySelector('input[name=vis]:checked').value === 'members';
+        await setDoc(doc(c.db, 'papers', id, 'notes', c.user.uid), {
+          text, rating: 0, // ratings are retired; the rules still expect the field
+          name: c.member.name || c.user.displayName || c.user.email, shared, updatedAt: serverTimestamp(),
+        });
+        mine = { text, shared };
+        await setNoted(c.db, c.user.uid, id, Date.now());
+      } else if (mine) { // an empty note is removed
+        await deleteDoc(doc(c.db, 'papers', id, 'notes', c.user.uid));
+        mine = null;
+        await setNoted(c.db, c.user.uid, id, null);
+      }
+    } catch (err) { console.error(err); status.textContent = 'Could not save the note.'; return; }
+    rowCtx.noted = await loadNoted(c.db, c.user.uid);
+    apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // shared notes are searched server-side; private ones leave the index
+    status.textContent = ' Saved';
   };
 
-  // Journal club: sessions this paper was presented at, with members' take-home points, and a way to plan one.
+  // Journal club: a card at the top for the latest session, and below every session with members' take-home points
+  // and a way to plan one.
   (async () => {
     const jc = $in(page, '#jc');
-    const ss = await getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id)));
-    const sessions = ss.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.date.toMillis() - a.date.toMillis());
-    const pts = await Promise.all(sessions.map((s) => getDocs(collection(c.db, 'sessions', s.id, 'points'))));
+    const { sessions, points: pts } = await sessionsP;
     jc.replaceChildren();
     sessions.forEach((s, i) => {
       const when = s.date.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-      const link = s.slidesFile?.pdf ? `<button type="button" class="pdf-pill slides-pill" data-sid="${c.esc(s.id)}">${SLIDES_ICON}Slides</button>`
-        : safeUrl(s.slides) ? `<a class="pdf-pill" href="${c.esc(safeUrl(s.slides))}" target="_blank" rel="noopener">${SLIDES_ICON}Slides</a>` : '';
+      const link = slidesPill(s);
       const box = c.el(`<div class="jc-session"><p><a href="#/session/${c.esc(s.id)}">${c.esc(when)}</a> <span class="muted">Presenter: ${c.esc(s.presenterName || '—')}</span>${link ? ` ${link}` : ''}</p></div>`);
-      const sb = box.querySelector('.slides-pill');
-      if (sb) sb.onclick = () => openSlides(s.id);
       const texts = pts[i].docs.map((d) => d.data().text).filter(Boolean);
       if (texts.length) { const ul = c.el('<ul class="list"></ul>'); texts.forEach((t) => ul.append(c.el(`<li><span>${c.esc(t)}</span></li>`))); box.append(ul); }
       jc.append(box);
@@ -864,6 +902,24 @@ async function renderPaper(id, hitPage) {
       updateDoc(snap.ref, { presented: sessions.map((s) => ({ sid: s.id, date: s.date })).reverse() }).then(dirty, () => {});
     }
   })().catch(() => {});
+  sessionsP.then(async ({ sessions }) => {
+    if (!sessions.length || !page.isConnected) return; // no card if never presented
+    const s = sessions[0];
+    const mineText = await getDoc(doc(c.db, 'users', c.user.uid, 'sessionNotes', s.id)).then((d) => (d.exists() ? String(d.data().text || '') : ''), () => ''); // private; absent = no lines
+    const when = s.date.toDate().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    const card = c.el(`<div class="paper-card jc-card" role="link" tabindex="0" aria-label="Open the journal club session of ${c.esc(when)}">
+      <p class="eyebrow">JOURNAL CLUB</p>
+      <p><strong>${c.esc(when)}</strong>${slidesPill(s) ? ` ${slidesPill(s)}` : ''}</p>
+      <p class="muted">Presenter: ${c.esc(s.presenterName || '—')}</p>
+      ${mineText ? `<p class="jc-notes">${c.esc(mineText)}</p>` : ''}
+      ${sessions.length > 1 ? `<p><button type="button" class="link" id="earlier">${sessions.length - 1} earlier</button></p>` : ''}</div>`);
+    const go = () => { location.hash = `#/session/${s.id}`; };
+    card.onclick = (e) => { if (!e.target.closest('a, button')) go(); };
+    card.onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === card) { e.preventDefault(); go(); } };
+    const earlier = card.querySelector('#earlier');
+    if (earlier) earlier.onclick = () => $in(page, '#jch').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $in(page, '#jccard').replaceChildren(card);
+  }).catch(() => {});
 
   // Star, and the lists it is in: the Add to… sheet ticks lists (and tags) for this one paper.
   const star = $in(page, '#star');

@@ -182,7 +182,7 @@ test('admin: Find duplicates merges two papers, keeping notes, ratings, PDF, lis
   await seed(page, 'dd', { title: s('Tranexamic acid in hip-fracture surgery.'), doi: s('10.9/txa'), tags: arr(['exam']), addedBy: s('someone'), addedAt: at(T0 + 21000) });
   files.set('papers/dk.pdf', makePdf('kept'));
   const note = (id, who, text, rating) => a2(page.request.patch(`${DOCS}/papers/${id}/notes/${who}`, { headers: owner, data: { fields: {
-    text: s(text), rating: { integerValue: String(rating) }, name: s(who), updatedAt: at(T0) } } }));
+    text: s(text), rating: { integerValue: String(rating) }, name: s(who), shared: { booleanValue: true }, updatedAt: at(T0) } } }));
   const a2 = (p) => p.then((r) => expect(r.ok()).toBeTruthy());
   await note('dd', 'm1', 'Good on dosing', 4);
   await note('dk', 'm1', 'Read it', 2);

@@ -69,8 +69,9 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
 
   // A note.
   await page.getByLabel('Your note').fill('Bayesian framing of positive predictive value');
+  await page.getByLabel('Members', { exact: true }).check(); // shared notes are searchable; the default, Only me, is not
   await page.getByRole('button', { name: 'Save note' }).click();
-  await expect(page.locator('#notes').getByText('Bayesian framing of positive predictive value')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible();
 
   // Search: PDF text (with a typo), tags and notes.
   await page.getByRole('link', { name: 'Library', exact: true }).click();

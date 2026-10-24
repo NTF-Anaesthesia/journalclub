@@ -136,22 +136,30 @@ service cloud.firestore {
         && changedAtNowIfSet());
       allow delete: if mayEditPaper(pid);
 
-      // One note and rating per member per paper. An admin merging duplicates moves members' notes across
-      // (keeping each note's own updatedAt) and clears them from the paper that goes.
+      // One note and rating per member per paper. A note is private to its writer unless `shared` is true (a note
+      // without the field counts as private). Nobody else reads a private note, admins included. An admin merging
+      // duplicates may create a missing note, change a shared one and clear any, moving members' shared notes across
+      // (keeping each note's own updatedAt); a private note is never read or overwritten by an admin.
       function noteOk(d) {
-        return d.keys().hasOnly(['text', 'rating', 'name', 'updatedAt'])
+        return d.keys().hasOnly(['text', 'rating', 'name', 'shared', 'updatedAt'])
           && d.text is string && d.text.size() <= 4000
-          && d.rating is int && d.rating >= 0 && d.rating <= 5;
+          && d.rating is int && d.rating >= 0 && d.rating <= 5
+          && (!('shared' in d) || d.shared is bool);
       }
       match /notes/{uid} {
         allow write: if isMember() && request.auth.uid == uid
           && (request.method == 'delete' || (noteOk(request.resource.data) && request.resource.data.updatedAt == request.time));
-        allow write: if isAdmin()
-          && (request.method == 'delete' || (noteOk(request.resource.data) && request.resource.data.updatedAt is timestamp));
+        allow create: if isAdmin() && noteOk(request.resource.data) && request.resource.data.updatedAt is timestamp;
+        allow update: if isAdmin() && resource.data.get('shared', false) == true
+          && noteOk(request.resource.data) && request.resource.data.updatedAt is timestamp;
+        allow delete: if isAdmin();
       }
 
     }
-    match /{path=**}/notes/{uid} { allow read: if isMember(); }
+    // Notes are read by their writer, and by members when shared. A list or collection-group query must itself
+    // filter on shared == true (or be the writer's own doc), so private notes never reach another member's query.
+    function noteReadable(uid) { return isMember() && (request.auth.uid == uid || resource.data.get('shared', false) == true); }
+    match /{path=**}/notes/{uid} { allow read: if noteReadable(uid); }
 
     // Old per-page PDF text, from before search moved to the Worker (D1). Read by the admin backfill; no new writes.
     match /texts/{pid} {
@@ -197,11 +205,14 @@ service cloud.firestore {
       allow read: if isMember() && request.auth.uid == uid;
       allow write: if isMember() && request.auth.uid == uid
         && (request.method == 'delete' || (
-          request.resource.data.keys().hasOnly(['recent', 'searches', 'updatedAt'])
+          request.resource.data.keys().hasOnly(['recent', 'searches', 'noted', 'notedScan', 'updatedAt'])
           && (!('recent' in request.resource.data)
             || (request.resource.data.recent is list && request.resource.data.recent.size() <= 20))
           && (!('searches' in request.resource.data)
             || (request.resource.data.searches is list && request.resource.data.searches.size() <= 20))
+          && (!('noted' in request.resource.data)
+            || (request.resource.data.noted is map && request.resource.data.noted.size() <= 3000))
+          && (!('notedScan' in request.resource.data) || request.resource.data.notedScan is number)
           && request.resource.data.updatedAt == request.time));
 
       // My private notes on a journal club session (id = the session id). Owner only: not readable by other members or
