@@ -22,13 +22,27 @@ export async function workerApi(page, project = 'demo-jc', { ai = fakeAi() } = {
   const lookups = fixtureFetch();
   const fetchFn = (url, init) => (String(url).startsWith(LIVE) ? fetch(String(url).replace(LIVE, EMU), init) : lookups(url, init));
   const calls = [];
+  // The app sends some requests without waiting (POST /api/index/<id>/notes after a note save), so one can still be
+  // running when the test ends. Dispose D1 only after those finish and drop any that arrive after close: a late
+  // request on a disposed D1 throws, and that error fails whichever test this Playwright worker runs next.
+  let closed = false;
+  const pending = new Set();
   await page.route('**/api/**', async (route) => {
+    if (closed) return route.abort().catch(() => {});
     const r = route.request();
     calls.push(`${r.method()} ${new URL(r.url()).pathname}`);
     const body = ['GET', 'HEAD'].includes(r.method()) ? undefined : r.postDataBuffer();
-    const res = await api(new Request(r.url(), { method: r.method(), headers: r.headers(), body }), { FILES, SEARCH: d1.db, AI: ai }, fetchFn);
-    await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
+    const job = (async () => {
+      const res = await api(new Request(r.url(), { method: r.method(), headers: r.headers(), body }), { FILES, SEARCH: d1.db, AI: ai }, fetchFn);
+      await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
+    })();
+    pending.add(job);
+    try { await job; } catch (e) { if (!closed) throw e; } finally { pending.delete(job); }
   });
-  page.on('close', () => d1.dispose());
+  page.on('close', async () => {
+    closed = true;
+    await Promise.allSettled([...pending]);
+    await d1.dispose().catch(() => {});
+  });
   return { files: store, calls, db: d1.db, ai };
 }
