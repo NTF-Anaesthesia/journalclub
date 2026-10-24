@@ -202,10 +202,10 @@ const REFRESH_MISSING = ['noAbstract', 'notFound', 'noId', 'failed'];
 
 // The screen stays on while a job runs; the browser drops the lock when the page is hidden, so it is taken again then.
 let screenLock = null;
-async function holdScreen() {
+export async function holdScreen() {
   try { screenLock = (await navigator.wakeLock?.request('screen')) || null; } catch { screenLock = null; }
 }
-function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
+export function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
 
 // The saved list is every paper not yet done: in flight, failed but not yet classed, and queued. Writing it re-serialises
 // the whole list, so after a paper it is throttled to once per SAVE_EVERY; pausing, hiding the page and finishing write at once.
