@@ -230,12 +230,6 @@ service cloud.firestore {
       }
     }
 
-    // A member's private session notes: only they read them (admins included). The session page writes them. The paper
-    // page and Saved read them here.
-    match /users/{uid}/sessionNotes/{sid} {
-      allow read: if isMember() && request.auth.uid == uid;
-    }
-
     // Club settings: members read (the Teams link is for them); only admins change the Teams link, prompt,
     // default start time and the default discussion form.
     match /config/{cid} {
