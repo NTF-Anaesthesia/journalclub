@@ -37,7 +37,8 @@ const ABSTRACT_NOTE = {
   pdf: 'Taken from the PDF’s own abstract or summary.',
 };
 const AUTHORS_KEY = 'jc.showAuthors';
-const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) !== '0'; } catch { return true; } }; // on unless turned off
+export const showAuthors = () => { try { return localStorage.getItem(AUTHORS_KEY) !== '0'; } catch { return true; } }; // on unless turned off
+export const setShowAuthors = (on) => { try { localStorage.setItem(AUTHORS_KEY, on ? '1' : '0'); } catch { /* private */ } };
 
 const $in = (root, sel) => root.querySelector(sel);
 const mayEdit = (p) => c.member.role === 'admin' || p.addedBy === c.user.uid;
@@ -410,7 +411,7 @@ async function renderSearch() {
       else { ui.sort = r.value; try { localStorage.setItem(SORT_KEY, ui.sort); } catch { /* private */ } }
       d.close(); show();
     }; });
-    d.querySelector('#sauth').onchange = (e) => { try { localStorage.setItem(AUTHORS_KEY, e.target.checked ? '1' : '0'); } catch { /* private */ } redrawRows(); };
+    d.querySelector('#sauth').onchange = (e) => { setShowAuthors(e.target.checked); redrawRows(); };
   };
 
   // ---- Select mode ----

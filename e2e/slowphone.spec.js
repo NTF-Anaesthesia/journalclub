@@ -14,7 +14,7 @@ const T0 = Date.UTC(2026, 0, 1);
 test('a stalled Firestore stream and a hung count: the count line and Select are ready in 6 s, and Copy diagnostics names the slow reads', async ({ page, context }) => {
   test.setTimeout(60000);
   await workerApi(page, PROJECT);
-  await page.goto(`/?emulator=${PROJECT}`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   const uid = await page.evaluate(async () => { await window.__jc.signIn('stall@example.org'); return window.__jc.auth.currentUser.uid; });
   expect((await page.request.patch(`${DOCS}/members/${uid}`, { headers: owner, data: { fields: {
     email: s('stall@example.org'), name: s('Stall'), role: s('member'), inviteId: s('seed') } } })).ok()).toBeTruthy();
@@ -24,7 +24,7 @@ test('a stalled Firestore stream and a hung count: the count line and Select are
       tags: { arrayValue: {} }, addedBy: s(uid), addedAt: at(T0 + i * 1000), changedAt: at(T0 + i * 1000) } } })).ok()).toBeTruthy();
   }
   // A first visit on this phone: the sync stamp, saved head and member copy are stored on the device.
-  await page.goto(`/?emulator=${PROJECT}#/`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await expect(page.locator('#count')).toHaveText('3 papers · Recently discussed');
 
@@ -33,7 +33,7 @@ test('a stalled Firestore stream and a hung count: the count line and Select are
   await page.route('**/*runAggregationQuery*', () => {});
   await page.goto('about:blank');
   const t0 = Date.now();
-  await page.goto(`/?emulator=${PROJECT}#/`, { waitUntil: 'commit' });
+  await page.goto(`/?emulator=${PROJECT}#/library`, { waitUntil: 'commit' });
   await expect(page.locator('#selb')).toBeEnabled({ timeout: 6000 });
   await expect(page.locator('#count')).toHaveText(/^3\+? papers · Recently discussed$/);
   expect(Date.now() - t0).toBeLessThan(6000);

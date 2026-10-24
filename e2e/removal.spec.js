@@ -105,7 +105,7 @@ test('group link: many join, admin sees who, revoking stops new joins; single-us
     await p.reload();
     await expect(p.getByText(`Join as ${email}?`)).toBeVisible();
     await p.getByRole('button', { name: 'Accept invite' }).click();
-    await expect(p.getByLabel('Search the library')).toBeVisible();
+    await expect(p.getByRole('heading', { name: 'Club', exact: true })).toBeVisible();
   }
 
   await admin.reload();

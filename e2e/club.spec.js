@@ -30,11 +30,11 @@ test('a member plans a session from a paper page; the paper and the list show it
   // Papers first, then the member opens the app: its catalogue is read once per page load.
   const res = await signInAs(browser, 'res@example.org', 'Ada Resident', 'member');
 
-  // Tabs are Club, Library, Saved: no Vote, no Sessions.
+  // Tabs are Club, Calendar, Library, Saved, Settings: no Vote, no Sessions.
   await res.goto(`/?emulator=${PROJECT}#/home`);
   await expect(res.locator('#tabs').getByText('Vote')).toHaveCount(0);
   await expect(res.locator('#tabs').getByText('Saved')).toBeVisible();
-  await expect(res.locator('#tabs .app-tab')).toHaveText(['Club', 'Library', 'Saved']);
+  await expect(res.locator('#tabs .app-tab')).toHaveText(['Club', 'Calendar', 'Library', 'Saved', 'Settings']);
   await res.goto(`/?emulator=${PROJECT}#/rota`);
   await expect(res.getByRole('heading', { name: 'Presenter rota' })).toHaveCount(0);
 

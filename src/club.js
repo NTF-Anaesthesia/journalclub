@@ -8,13 +8,14 @@ import {
 
 import { dirty as dirtyLibrary, loadLibrary } from './catalogue.js';
 import { personIndex } from './people.js';
+import { isoDay, renderCalendar } from './calendar.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
   sessionMarkdown, csvExport,
 } from './discussion.js';
 import { fieldEditor, discussionForm, discussionView } from './discussion-ui.js';
 
-export const CLUB_ROUTES = ['home', 'plan', 'sessions', 'session', 'point'];
+export const CLUB_ROUTES = ['home', 'plan', 'sessions', 'session', 'point', 'calendar'];
 
 let c;              // { db, user, member, view, el, esc } for the current render
 
@@ -49,13 +50,14 @@ export { fieldEditor };
 
 export function renderClubRoute(r, ctx) {
   c = ctx;
+  if (r.name === 'calendar') return renderCalendar(r.arg, c);
   if (r.name === 'plan') return renderPlan(r.arg === '-' ? '' : r.arg, r.arg2);
   if (r.name === 'session' && r.arg) return renderSession(r.arg);
   if (r.name === 'point' && r.arg) return renderPoint(r.arg);
   return renderHome();
 }
 
-// Club tab (#/home and #/sessions): today's or the next session first (when, your role, your actions), then Plan a session,
+// Club tab (#/, also #/home and #/sessions): today's or the next session first (when, your role, your actions), then Plan a session,
 // Upcoming and the latest Past sessions (the rest behind Show all).
 const PAST_SHOWN = 5;
 const daysAway = (s) => Math.round((s.date.toMillis() - startOfToday().toMillis()) / 86400000);
@@ -64,11 +66,12 @@ const myRole = (s) => (s.presenterUid === c.user.uid ? 'You present' : s.coordin
 const roleBadge = (s) => (myRole(s) ? ` <span class="badge">${myRole(s)}</span>` : '');
 
 async function renderHome() {
+  const view = c.view; // this render's view: `c` moves on if the route changes while this page loads
   const page = c.el(`<section class="card"><h1>Club</h1>
     <h2>Next session</h2><div id="next"><p class="muted">Loading…</p></div>
     <p class="actions"><a class="button primary" href="#/plan">Plan a session</a></p>
     <h2>Upcoming</h2><ul id="up" class="list"></ul><h2>Past</h2><ul id="past" class="list"></ul><p id="pastmore"></p></section>`);
-  c.view.replaceChildren(page);
+  view.replaceChildren(page);
   const [ss, club] = await Promise.all([getDocs(query(collection(c.db, 'sessions'), orderBy('date'))), loadClub()]);
   if (!page.isConnected) return;
   const today = startOfToday().toMillis();
@@ -99,7 +102,7 @@ async function renderHome() {
     const when = [whenText(next), startTimeText(next, club), next.venue || next.location].filter(Boolean).join(' · ');
     const edit = mayPlanSession(next)
       ? `<a href="#/plan/-/${next.id}">${myRole(next) === 'You present' && !hasSlides ? 'Add slides' : 'Edit session'}</a>` : '';
-    box.replaceChildren(c.el(`<p class="next"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a>${roleBadge(next)}<br>
+    box.replaceChildren(c.el(`<p class="next tap-card"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a>${roleBadge(next)}<br>
         <span class="when">${c.esc(when)}</span><br>
         <a href="#/session/${next.id}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
       c.el(`<p class="actions">${next.locked ? '' : `<a href="#/point/${next.id}">${mine?.exists() ? 'Edit your take-home point' : 'Add take-home point'}</a>`}
@@ -159,7 +162,6 @@ async function setPresented(b, paperId, sid, date) {
   b.update(ref, { presented: list, changedAt: serverTimestamp() }); // changedAt: the library's catalogue picks it up
 }
 
-const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 // The club's usual weekday (admin setting), as the next such date from today; blank if none is set.
 function usualDate(club) {
@@ -175,11 +177,12 @@ const mayPlanSession = (s) => isAdmin() || (!s.locked && [s.createdBy, s.present
 // Any member may plan; `#/plan/<paper>` opens it with that paper chosen. `#/plan/-/<sid>` is the session's Edit page:
 // the same sheet, then the summary, slides, discussion and (admins) the session settings, all saved by one Save bar.
 async function renderPlan(paperId, sid) {
+  const view = c.view;
   const oldSnap = sid ? await getDoc(doc(c.db, 'sessions', sid)) : null;
-  if (sid && !oldSnap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
+  if (sid && !oldSnap.exists()) { view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/">Club</a></p></section>')); return; }
   const old = oldSnap ? oldSnap.data() : null;
   if (old && !mayPlanSession(old)) {
-    c.view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who planned this session, its presenter, its coordinator or an admin can change it.</p><p><a href="#/session/${c.esc(sid)}">Back to the session</a></p></section>`));
+    view.replaceChildren(c.el(`<section class="card"><h1>Not allowed</h1><p>Only the person who planned this session, its presenter, its coordinator or an admin can change it.</p><p><a href="#/session/${c.esc(sid)}">Back to the session</a></p></section>`));
     return;
   }
   // The library's cached catalogue (src/catalogue.js), not a fresh read of every paper.
@@ -214,7 +217,7 @@ async function renderPlan(paperId, sid) {
     ${sid ? `<div id="sedit" class="stack"></div>
       <div class="savebar no-print" id="savebar"><p id="pfmsg" class="muted" role="status"></p>
         <a href="#/session/${c.esc(sid)}">Done</a><button type="button" class="primary" id="saveall">Save</button></div>` : ''}</section>`);
-  c.view.replaceChildren(page);
+  view.replaceChildren(page);
   const form = $in(page, '#pf'); const msg = $in(page, '#pfmsg');
   const find = $in(form, '#spaper'); const pick = $in(form, '#spick');
 
@@ -236,7 +239,9 @@ async function renderPlan(paperId, sid) {
   };
 
   const date = $in(form, '#sdate');
-  date.value = old ? isoDay(old.date.toDate()) : usualDate(club);
+  // The Calendar's empty days open #/plan?date=<yyyy-mm-dd>.
+  const asked = new URLSearchParams(location.hash.split('?')[1] || '').get('date');
+  date.value = old ? isoDay(old.date.toDate()) : /^\d{4}-\d{2}-\d{2}$/.test(asked || '') ? asked : usualDate(club);
   const clash = () => {
     const same = ss.docs.filter((d) => d.id !== sid && date.value && isoDay(d.data().date.toDate()) === date.value);
     $in(form, '#sclash').textContent = same.length ? `Already planned that day: ${same.map((d) => decodeEntities(d.data().paperTitle)).join('; ')}` : '';
@@ -380,15 +385,16 @@ async function deleteSession(snap) {
   await setPresented(b, s.paperId, snap.id, null);
   await b.commit();
   dirtyLibrary();
-  location.hash = '#/home';
+  location.hash = '#/';
 }
 
 const sessionUrl = (sid) => `${location.origin}/#/point/${sid}`;
 const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); };
 
 async function renderSession(sid) {
+  const view = c.view;
   const snap = await getDoc(doc(c.db, 'sessions', sid));
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
+  if (!snap.exists()) { view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/">Club</a></p></section>')); return; }
   const s = { id: sid, ...snap.data() };
   const [club, template, pts] = await Promise.all([loadClub(), loadTemplate(), getDocs(collection(c.db, 'sessions', sid, 'points'))]);
   const points = pts.docs.map((d) => ({ ...d.data(), mine: d.id === c.user.uid }));
@@ -406,7 +412,7 @@ async function renderSession(sid) {
   const pmeta = paper ? [paper.journal, paper.year].filter(Boolean).join(' · ') : '';
   const short = paper?.abstract ? decodeEntities(paper.abstract).replace(/\s+/g, ' ').slice(0, 220).replace(/\s+\S*$/, '') + (paper.abstract.length > 220 ? '…' : '') : '';
   const venue = s.venue || s.location || '';
-  const page = c.el(`<section class="card sessionpage"><p class="eyebrow">SESSION</p><p class="back"><a href="#/home">← Club</a></p>
+  const page = c.el(`<section class="card sessionpage"><p class="eyebrow">SESSION</p><p class="back"><a href="#/">← Club</a></p>
     <div class="session-head"><h1>${c.esc(fmtDate(s.date))}</h1>
     <p class="muted">${c.esc(startTimeText(s, club))}${venue ? ` · ${c.esc(venue)}` : ''}</p>
     <p>Presenter: ${c.esc(s.presenterName || '—')}${s.coordinatorName ? `<br>Coordinator: ${c.esc(s.coordinatorName)}` : ''}</p>
@@ -422,7 +428,7 @@ async function renderSession(sid) {
     <div id="sqr"></div>
     <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span>
     ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}</section>`);
-  c.view.replaceChildren(page);
+  view.replaceChildren(page);
 
   const disc = discussionView(c, fields, s.discussion?.answers);
   if (disc.children.length) { $in(page, '#sdisc').append(c.el('<h2>Discussion</h2>'), disc); }
@@ -534,8 +540,9 @@ function adminSessionTools(snap, s, template, done, section) {
 
 // One-box form: each member gets one take-home point per session and can edit it.
 async function renderPoint(sid) {
+  const view = c.view;
   const [snap, club] = await Promise.all([getDoc(doc(c.db, 'sessions', sid)), loadClub()]);
-  if (!snap.exists()) { c.view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/home">Club</a></p></section>')); return; }
+  if (!snap.exists()) { view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/">Club</a></p></section>')); return; }
   const s = snap.data();
   const ref = doc(c.db, 'sessions', sid, 'points', c.user.uid);
   const mine = await getDoc(ref);
@@ -544,7 +551,7 @@ async function renderPoint(sid) {
     ${s.locked ? '<p class="muted">This session is locked.</p>' : `<form class="stack"><label>${c.esc(club.pointPrompt)}
       <textarea id="ptext" rows="4" maxlength="500" required></textarea></label>
       <button class="primary">${mine.exists() ? 'Update' : 'Save'}</button><p class="muted" id="pmsg" role="status"></p></form>`}</section>`);
-  c.view.replaceChildren(page);
+  view.replaceChildren(page);
   const form = $in(page, 'form');
   if (!form) return;
   if (mine.exists()) $in(form, '#ptext').value = mine.data().text;

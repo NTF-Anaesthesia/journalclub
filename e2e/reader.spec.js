@@ -44,7 +44,7 @@ async function setup(page) {
   }
   files.set(`papers/${ID}.pdf`, makePdf(TEXTS));
   await indexPages(db, ID, TEXTS);
-  await page.goto(`/?emulator=${PROJECT}#/`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
   return uid;
