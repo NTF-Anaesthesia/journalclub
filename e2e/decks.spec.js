@@ -75,7 +75,7 @@ test('a member adds a teaching deck; Slides lists it with session slides; one se
   await expect(page).toHaveURL(new RegExp(`#/view/deck_${did}/1\\?q=cricothyroidotomy$`));
   await expect(page.locator('#rtitle')).toHaveText('Difficult airway');
   await expect(page.locator('.reader-pg canvas').first()).toBeVisible();
-  await expect(page.getByRole('link', { name: '← Back to the deck' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Back to the deck' })).toBeVisible();
 
   // Metadata search finds by topic; the maker edits and deletes the deck; its file and index go with it.
   await page.goto(`/?emulator=${PROJECT}#/library/slides?q=ent`);

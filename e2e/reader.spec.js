@@ -108,6 +108,7 @@ test('airplane mode: the shell loads and a starred PDF opens from the offline co
   await page.reload();
   await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
   await expect(page.locator('.reader-pg[data-n="3"] canvas')).toBeVisible();
+  await page.getByRole('button', { name: 'More' }).click();
   await expect(page.getByText('Offline copy')).toBeVisible();
   await context.setOffline(false);
 
@@ -155,10 +156,93 @@ test('Download saves the PDF under the paper title; Send shares the file where t
   });
   await page.goto(`/?emulator=${PROJECT}#/read/${ID}`);
   await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await page.getByRole('button', { name: 'More' }).click();
   const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download' }).click()]);
   expect(dl.suggestedFilename()).toBe('Reversal of neuromuscular block.pdf');
   await page.getByRole('button', { name: 'Send' }).click();
   await expect.poll(() => page.evaluate(() => window.__shared)).toEqual({
     name: 'Reversal of neuromuscular block.pdf', type: 'application/pdf', size: files.get(`papers/${ID}.pdf`).length, title: 'Reversal of neuromuscular block' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+const getDoc = async (page, path) => (await (await page.request.get(`${DOCS}/${path}`, { headers: owner })).json()).fields;
+
+test('search in the file: the Library term is pre-filled, can be edited, stepped through and cleared', async ({ page }) => {
+  await setup(page);
+  await page.goto(`/?emulator=${PROJECT}#/read/${ID}?q=sugammadex`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  const header = page.locator('.reader-tools');
+  expect((await header.boundingBox()).height).toBeLessThan(70); // one line at 390 px
+  await expect(page.getByLabel('Find in this file')).toHaveValue('sugammadex');
+  await expect(page.getByText('1 of 1').or(page.getByText('– of 1'))).toBeVisible();
+  await page.getByLabel('Page number').fill('1');
+  await page.getByLabel('Page number').press('Enter');
+  await page.getByRole('button', { name: 'Next match' }).click();
+  await expect(page.locator('.reader-pg[data-n="3"] .pdf-hl.cur')).toBeVisible();
+  await expect(page.getByLabel('Page number')).toHaveValue('3');
+
+  // Edit the term: marks move to the new word, with a count; two hits step between pages.
+  await page.getByLabel('Find in this file').fill('page');
+  await expect(page.getByText(/of 3$/)).toBeVisible();
+  await page.getByRole('button', { name: 'Next match' }).click();
+  await page.getByRole('button', { name: 'Next match' }).click();
+  await expect(page.locator('.pdf-hl.cur')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Previous match' }).click();
+  await expect(page.locator('.pdf-hl.cur')).toHaveCount(1);
+
+  // Cleared: no marks at all.
+  await page.getByLabel('Find in this file').fill('');
+  await expect(page.locator('.pdf-hl')).toHaveCount(0);
+  await expect(page.locator('.reader')).toHaveAttribute('data-find', '');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('notes drawer on a paper keeps the note visibility; p. N inserts the page; empty removes the note', async ({ page }) => {
+  const uid = await setup(page);
+  const note = { text: s('Earlier shared thought'), rating: { integerValue: '0' }, name: s('Reader One'), shared: { booleanValue: true }, updatedAt: { timestampValue: new Date().toISOString() } };
+  expect((await page.request.patch(`${DOCS}/papers/${ID}/notes/${uid}`, { headers: owner, data: { fields: note } })).ok()).toBeTruthy();
+  await page.goto(`/?emulator=${PROJECT}#/read/${ID}`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await expect(page.getByLabel('My notes')).toHaveValue('Earlier shared thought');
+  await expect(page.getByText('· Members')).toBeVisible();
+  await page.getByLabel('Page number').fill('2');
+  await page.getByLabel('Page number').press('Enter');
+  await expect(page.getByRole('button', { name: 'Insert p. 2' })).toBeVisible();
+  await page.getByRole('button', { name: 'Insert p. 2' }).click();
+  await page.getByLabel('My notes').pressSequentially('rocuronium dose');
+  await expect(page.getByText('Saved ✓')).toBeVisible();
+  const f = await getDoc(page, `papers/${ID}/notes/${uid}`);
+  expect(f.text.stringValue).toContain('p. 2 rocuronium dose');
+  expect(f.shared.booleanValue).toBe(true); // visibility untouched
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await page.getByLabel('My notes').fill('');
+  await page.getByLabel('My notes').blur();
+  await expect.poll(async () => (await page.request.get(`${DOCS}/papers/${ID}/notes/${uid}`, { headers: owner })).status()).toBe(404);
+});
+
+test('notes drawer on session slides writes my private session note; a deck has no drawer', async ({ page }) => {
+  const uid = await setup(page);
+  const when = new Date().toISOString();
+  expect((await page.request.patch(`${DOCS}/sessions/ss1`, { headers: owner, data: { fields: {
+    date: { timestampValue: when }, paperId: s(ID), paperTitle: s('Reversal of neuromuscular block'), presenterName: s('Pat'),
+    slidesFile: { mapValue: { fields: { name: s('t.pdf'), size: { integerValue: '10' }, kind: s('pdf'), pdf: { booleanValue: true } } } } } } })).ok()).toBeTruthy();
+  files.set('slides/ss1/pdf', makePdf(['Slide one', 'Slide two']));
+  await page.goto(`/?emulator=${PROJECT}#/view/sess_ss1/1`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await expect(page.getByText('· Only me')).toBeVisible();
+  await page.getByLabel('My notes').fill('Ask about reversal timing');
+  await expect(page.getByText('Saved ✓')).toBeVisible();
+  const f = await getDoc(page, `users/${uid}/sessionNotes/ss1`);
+  expect(f.text.stringValue).toBe('Ask about reversal timing');
+  expect(f.paperId.stringValue).toBe(ID);
+  expect(f.paperTitle.stringValue).toBe('Reversal of neuromuscular block');
+
+  expect((await page.request.patch(`${DOCS}/decks/dk1`, { headers: owner, data: { fields: { title: s('Airway deck'), addedBy: s(uid) } } })).ok()).toBeTruthy();
+  files.set('decks/dk1/pdf', makePdf(['Deck slide']));
+  await page.goto(`/?emulator=${PROJECT}#/view/deck_dk1/1`);
+  await expect(page.locator('.reader')).toHaveAttribute('data-ready', '1');
+  await expect(page.getByRole('button', { name: 'Notes' })).toBeHidden();
 });
