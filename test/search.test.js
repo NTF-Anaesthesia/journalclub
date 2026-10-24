@@ -166,7 +166,7 @@ test('removing the PDF drops its pages; removing the paper drops everything', as
   assert.equal((await find(env, W, 'remifentanil')).length, 0);
 });
 
-test('admin backfill indexes notes only, 25 papers per call, and ignores old texts cursors', async () => {
+test('admin backfill indexes notes only, 10 papers per call, and ignores old texts cursors', async () => {
   const ids = Array.from({ length: 30 }, (_, i) => `b${i}`);
   const bpapers = { ...papers, ...Object.fromEntries(ids.map((id) => [id, { addedBy: 'mem1' }])) };
   // Stale Firestore pages must never reach D1: Rebuild no longer copies texts/*.
@@ -186,7 +186,7 @@ test('admin backfill indexes notes only, 25 papers per call, and ignores old tex
     indexed += out.indexed; calls++;
     body = out.next;
   }
-  assert.ok(calls >= 2, 'notes go 25 per call');
+  assert.ok(calls >= 2, 'notes go 10 per call');
   assert.equal(indexed, 2);
   assert.equal((await find(env, W, 'tranexamic'))[0].paperId, 'b11');
   assert.equal((await find(env, W, 'lastpage'))[0].paperId, 'b29');

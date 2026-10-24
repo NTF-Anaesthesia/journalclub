@@ -202,10 +202,10 @@ const REFRESH_MISSING = ['noAbstract', 'notFound', 'noId', 'failed'];
 
 // The screen stays on while a job runs; the browser drops the lock when the page is hidden, so it is taken again then.
 let screenLock = null;
-async function holdScreen() {
+export async function holdScreen() {
   try { screenLock = (await navigator.wakeLock?.request('screen')) || null; } catch { screenLock = null; }
 }
-function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
+export function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
 
 const save = (j) => saveState(j.uid, 'job', { kind: j.kind, ids: [...j.inflight, ...j.queue], counts: j.counts, missing: j.missing, total: j.total, done: j.done, started: j.started });
 

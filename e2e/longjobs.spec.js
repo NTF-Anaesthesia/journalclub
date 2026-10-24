@@ -89,12 +89,12 @@ test('Rebuild: a forced 500 keeps the cursor and Resume carries on from it; note
   test.setTimeout(60000);
   await setup(page, 'lj.rebuild@example.org', 30);
   const bodies = [];
-  let fail = false;
+  let fail = false, first = true;
   await page.route('**/api/backfill', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
     bodies.push(body);
     if (fail) return route.fulfill({ status: 500, json: { error: 'boom' } });
-    if (bodies.length === 1) fail = true; // the first batch goes through, then every call fails
+    if (first) { first = false; fail = true; } // the first batch goes through, then every call fails
     return route.fallback();
   });
   await page.goto(`/?emulator=${PROJECT}#/reindex`);

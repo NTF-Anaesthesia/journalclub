@@ -15,7 +15,7 @@ import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists, loadSearches, setSearchSaved, loadNoted, setNoted, scanNoted } from './prefs.js';
-import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, savedJob, resumeJob, discardJob, jobName, jobLabel, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
+import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, savedJob, resumeJob, discardJob, jobName, jobLabel, holdScreen, freeScreen, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
 import { saveState, loadState, clearState, retrying, httpError } from './jobstate.js';
 import { renderSaved, renderList } from './saved.js';
 import { isOffline, forget as forgetOffline, syncStarred } from './offline.js';
@@ -1029,9 +1029,10 @@ async function renderRemove(id) {
   };
 }
 
-// Admin: indexes every paper's shared notes for search, 25 papers per call. The cursor and running total are kept on
+// Admin: indexes every paper's shared notes for search, 10 papers per call. The cursor and running total are kept on
 // this device after every call, so a dropped connection or a closed tab carries on from there. Safe to run again.
 // (Old cursors in a "texts" phase are ignored: PDF text is rebuilt with Reindex PDFs in select mode.)
+let rebuild = null, rebuildPaint = null; // the Rebuild in progress, if any, and the redraw of the page showing it
 async function renderReindex() {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Rebuild PDF search</h1>
     <p class="muted">Re-indexes members' shared notes. For PDF text use Reindex PDFs in select mode. Safe to run more than once.</p>
@@ -1041,22 +1042,31 @@ async function renderReindex() {
   const msg = $in(page, '#rmsg'), go = $in(page, '#go'), saved = $in(page, '#rsaved');
   if (c.member.role !== 'admin') { go.remove(); msg.textContent = 'Admins only.'; return; }
   const uid = c.user.uid;
-  const drawSaved = () => {
+  // A run outlives this page: the module-level `rebuild` lets a return visit show it instead of starting a second loop.
+  const paint = () => {
     const s = loadState(uid, 'rebuild');
-    saved.hidden = !s || !s.next;
-    go.textContent = s?.next ? 'Start again from the beginning' : 'Rebuild';
+    const busy = !!rebuild?.running;
+    go.disabled = busy;
+    msg.textContent = rebuild?.text || '';
+    saved.hidden = busy || !s || !s.next;
+    go.textContent = s?.next && !busy ? 'Start again from the beginning' : 'Rebuild';
     if (saved.hidden) return;
     saved.replaceChildren(c.el(`<span>Rebuild paused: ${s.notes || 0} papers' notes done so far · </span>`));
     const r = c.el('<button type="button" class="link">Resume</button>');
     r.onclick = () => run(s);
     const d = c.el('<button type="button" class="link">Discard</button>');
-    d.onclick = () => { clearState(uid, 'rebuild'); msg.textContent = ''; drawSaved(); };
+    d.onclick = () => { clearState(uid, 'rebuild'); if (rebuild) rebuild.text = ''; paint(); };
     saved.append(r, document.createTextNode(' · '), d);
   };
+  rebuildPaint = paint;
   const run = async (from) => {
-    go.disabled = true; saved.hidden = true;
+    if (rebuild?.running) return;
+    rebuild = { running: true, text: '' };
+    paint();
     let body = from?.next || {}, notes = from?.notes || 0;
-    const wake = await navigator.wakeLock?.request('screen').catch(() => null);
+    await holdScreen();
+    const retake = () => { if (document.visibilityState === 'visible') holdScreen(); };
+    document.addEventListener('visibilitychange', retake);
     try {
       while (body) {
         const out = await retrying(async () => {
@@ -1069,15 +1079,19 @@ async function renderReindex() {
         notes += out.indexed;
         body = out.next;
         if (body) saveState(uid, 'rebuild', { next: body, notes });
-        msg.textContent = `Working… ${notes} papers' notes so far.`;
+        rebuild.text = `Working… ${notes} papers' notes so far.`;
+        rebuildPaint?.();
       }
       clearState(uid, 'rebuild');
-      msg.textContent = `Done: ${notes} papers' notes indexed.`;
-    } catch (e) { msg.textContent = `Stopped: ${e.message}. Your place is saved; tap Resume to carry on.`; }
-    wake?.release?.().catch(() => {});
-    go.disabled = false;
-    drawSaved();
+      rebuild.text = `Done: ${notes} papers' notes indexed.`;
+    } catch (e) {
+      rebuild.text = `Stopped: ${e.message}.${loadState(uid, 'rebuild')?.next ? ' Your place is saved; tap Resume to carry on.' : ''}`;
+    }
+    document.removeEventListener('visibilitychange', retake);
+    freeScreen();
+    rebuild.running = false;
+    rebuildPaint?.();
   };
-  go.onclick = () => { clearState(uid, 'rebuild'); run(null); };
-  drawSaved();
+  go.onclick = () => { if (rebuild?.running) return; clearState(uid, 'rebuild'); run(null); };
+  paint();
 }

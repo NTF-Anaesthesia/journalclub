@@ -64,12 +64,13 @@ async function noteTexts(member, paperId, fetchFn) {
   return (await r.json()).map((x) => x.document && field(x.document, 'text')).filter(Boolean);
 }
 
-// Admin, one batch per call so a call stays within the Worker's subrequest and D1 query limits (1 list + 25 note
-// queries). Indexes every paper's shared notes. The old "texts" phase is gone: it copied stale Firestore pages over
+// Admin, one batch per call so a call stays within the Worker's free-plan limit of 50 subrequests (D1 queries count
+// too): 1 list + BACKFILL_PAGE note queries + one D1 batch per paper, about 21 for 10 papers. Indexes every paper's shared notes. The old "texts" phase is gone: it copied stale Firestore pages over
 // newer D1 text, so a cursor that still says "texts" simply starts the notes phase.
+const BACKFILL_PAGE = 10;
 async function backfill(member, env, body, fetchFn) {
   const token = body.phase === 'notes' && typeof body.pageToken === 'string' ? `&pageToken=${encodeURIComponent(body.pageToken)}` : '';
-  const out = await getAs(member, `papers?pageSize=25&mask.fieldPaths=title${token}`, fetchFn);
+  const out = await getAs(member, `papers?pageSize=${BACKFILL_PAGE}&mask.fieldPaths=title${token}`, fetchFn);
   if (!out) return json({ error: 'Could not read the papers' }, 502);
   const docs = out.documents || [];
   let indexed = 0;
