@@ -54,7 +54,7 @@ test('search: operators, OR, phrases, exclusions; suggestions; saved search chip
   await box.fill('sugammadex OR headache');
   await expect(page.locator('#count')).toHaveText(/^2 found/);
   await box.fill('"puncture dural"');
-  await expect(page.locator('#count')).toHaveText(/^Nothing found/);
+  await expect(page.locator('#count')).toHaveText(/^No papers found/);
   await box.fill('"puncture headache"');
   await expect.poll(titles).toEqual(['Post dural puncture headache in obstetrics']);
   await box.fill('reversal -sugammadex');

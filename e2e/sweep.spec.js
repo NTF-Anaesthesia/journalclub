@@ -50,7 +50,7 @@ test('every route at 390 px: no console errors, no failed requests, no sideways 
     presenterName: s('Pat Presenter'), summary: s(''), slides: s('') });
   await put(page, 'lists/l1', { name: s('Obstetric posting'), about: s('x'), paperIds: arr(['p1']), createdBy: s(uid), visibility: s('shared') });
 
-  const hashes = ['', 'library', 'calendar', 'settings', 'lists', 'list/l1', 'list/starred-' + uid, 'home', 'sessions', 'session/s1', 'plan', 'add', 'import', 'paper/p1', 'paper/p2', 'paper/p3',
+  const hashes = ['', 'library', 'library/slides', 'deck/new', 'deck/nosuch', 'calendar', 'settings', 'lists', 'list/l1', 'list/starred-' + uid, 'home', 'sessions', 'session/s1', 'plan', 'add', 'import', 'paper/p1', 'paper/p2', 'paper/p3',
     'read/p3/1', 'remove/p1', 'reindex', 'duplicates', 'admin', 'me', 'join/nosuchtoken', 'nosuchroute'];
   await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();

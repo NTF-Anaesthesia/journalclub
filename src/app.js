@@ -11,6 +11,7 @@ import { firebaseConfig } from './config.js';
 import { renderLibraryRoute, LIBRARY_ROUTES, showAuthors, setShowAuthors } from './library.js';
 import { timing, withTimeout, diagnostics } from './catalogue.js';
 import { refresh as refreshOffline, clearAll as clearOffline, usage as offlineUsage, sizeText } from './offline.js';
+import { renderDeckRoute, DECK_ROUTES } from './decks.js';
 import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
@@ -99,6 +100,7 @@ function render() {
   const ctx = { db, user, member, view: { replaceChildren: (...n) => { if (mine === renders) view.replaceChildren(...n); } }, el, esc };
   if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, ctx);
   if (CLUB_ROUTES.includes(r.name)) return renderClubRoute(r, ctx);
+  if (DECK_ROUTES.includes(r.name)) return renderDeckRoute(r, ctx);
   return renderClubRoute({ name: 'home' }, ctx);
 }
 
@@ -112,7 +114,7 @@ const TABS = [
   ['settings', 'Settings', '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'],
 ];
 const TAB_OF = { library: 'library', add: 'library', import: 'library', paper: 'library', read: 'library', remove: 'library', reindex: 'library',
-  duplicates: 'library', lists: 'lists', list: 'lists', home: '', sessions: '', session: '', point: '', plan: '', calendar: 'calendar',
+  duplicates: 'library', deck: 'library', view: 'library', lists: 'lists', list: 'lists', home: '', sessions: '', session: '', point: '', plan: '', calendar: 'calendar',
   settings: 'settings', me: 'settings', admin: 'settings' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 

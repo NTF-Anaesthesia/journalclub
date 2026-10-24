@@ -15,12 +15,13 @@ const sessions = {
   s1: { createdBy: 'mem2', presenterUid: 'pres' },
   lk: { createdBy: 'pres', presenterUid: 'pres', locked: true },
 };
+const decks = { d1: { createdBy: 'pres' } };
 
 // Firestore REST, CloudConvert and share-link hosts, all faked. `calls` records outside fetches.
 function world({ links = {}, cc = true } = {}) {
   const calls = [];
   const fn = async (url, init = {}) => {
-    const fs = /\/documents\/(members|sessions)\/([^/?]+)$/.exec(url);
+    const fs = /\/documents\/(members|sessions|decks)\/([^/?]+)$/.exec(url);
     if (fs) {
       const caller = Object.keys(members).find((u) => init.headers?.Authorization === `Bearer ${tokenFor(u)}`);
       if (!caller) return new Response('{}', { status: 403 });
@@ -28,7 +29,7 @@ function world({ links = {}, cc = true } = {}) {
       if (col === 'members') {
         return id === caller ? Response.json({ fields: { role: { stringValue: members[id] } } }) : new Response('{}', { status: 403 });
       }
-      const row = sessions[id];
+      const row = (col === 'decks' ? decks : sessions)[id];
       if (!row) return new Response('{}', { status: 404 });
       return Response.json({ fields: Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'boolean' ? { booleanValue: v } : { stringValue: v }])) });
     }
@@ -149,4 +150,41 @@ test('a direct link keeps its file name; a private link is refused', async () =>
   assert.equal(r.status, 422);
   assert.match((await r.json()).error, /Anyone with the link/);
   assert.equal((await api(post('s1', 'pres', 'http://x.org/a.pdf'), env, W)).status, 400);
+});
+
+// D1 stand-in for the slide text: records what was indexed and removed.
+function searchDb() {
+  const rows = new Map();
+  const db = { rows, prepare(q) { return { q, bind(...a) { this.a = a; return this; }, async run() { if (/^DELETE/.test(q)) { for (const k of [...rows.keys()]) if (k === this.a[0]) rows.delete(k); } return {}; } }; },
+    async batch(st) { for (const x of st) { if (/^DELETE/.test(x.q)) rows.delete(x.a?.[0]); if (/^INSERT INTO page_text/.test(x.q)) rows.set(x.a[0], (rows.get(x.a[0]) || 0) + x.a.length / 3); } return []; } };
+  return db;
+}
+
+test('teaching decks: the maker or an admin uploads, any member opens, the slide text is indexed as deck_<id>', async () => {
+  const env = { FILES: bucket(), SEARCH: searchDb() }; const W = world();
+  const up = (uid) => req('/api/decks/d1', uid, { method: 'PUT', body: PDF, headers: { 'X-File-Name': encodeURIComponent('Airway talk.pdf') } });
+  assert.equal((await api(up('mem2'), env, W)).status, 403);
+  assert.equal((await api(up('pres'), env, W)).status, 200);
+  assert.deepEqual([...env.FILES.store.keys()], ['decks/d1/pdf']);
+  assert.equal((await api(req('/api/decks/d1/pdf', 'mem2'), env, W)).status, 200);
+  assert.equal((await api(req('/api/decks/nope', 'adm', { method: 'PUT', body: PDF }), env, W)).status, 404);
+  const text = (uid) => req('/api/decks/d1/text', uid, { method: 'PUT', body: JSON.stringify({ pages: ['Difficult airway', '', 'Front of neck'] }), headers: { 'Content-Type': 'application/json' } });
+  assert.equal((await api(text('mem2'), env, W)).status, 403);
+  const t = await api(text('adm'), env, W);
+  assert.equal(t.status, 200);
+  assert.equal((await t.json()).pages, 2);
+  assert.equal(env.SEARCH.rows.get('deck_d1'), 2);
+  assert.equal((await api(req('/api/decks/d1', 'pres', { method: 'DELETE' }), env, W)).status, 200);
+  assert.equal(env.FILES.store.size, 0);
+  assert.equal(env.SEARCH.rows.has('deck_d1'), false);
+});
+
+test('session slide text is indexed as sess_<id> by those who may change the slides', async () => {
+  const env = { FILES: bucket(), SEARCH: searchDb() }; const W = world();
+  const text = (sid, uid) => req(`/api/slides/${sid}/text`, uid, { method: 'PUT', body: JSON.stringify({ pages: ['Sugammadex'] }), headers: { 'Content-Type': 'application/json' } });
+  assert.equal((await api(text('s1', 'pres'), env, W)).status, 200);
+  assert.equal(env.SEARCH.rows.get('sess_s1'), 1);
+  assert.equal((await api(text('lk', 'pres'), env, W)).status, 403);
+  // A paper id that looks like a slide key cannot reach the paper index.
+  assert.equal((await api(req('/api/index/deck_d1', 'adm', { method: 'PUT', body: '{}' }), env, W)).status, 404);
 });

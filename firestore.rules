@@ -220,6 +220,31 @@ service cloud.firestore {
           && request.resource.data.updatedAt == request.time));
     }
 
+    // Teaching slide decks: any member adds one (and is its maker); the maker and admins edit or delete it. The file
+    // itself is in R2 (the Worker), described by slidesFile as on a session.
+    function deckOk(d) {
+      return d.title is string && d.title.size() > 0 && d.title.size() <= 300
+        && d.tags is list && d.tags.size() <= 20
+        && d.by is string && d.by.size() <= 120
+        && d.about is string && d.about.size() <= 4000
+        && (d.get('date', null) == null || d.get('date', null) is timestamp)
+        && d.get('slidesFile', {}) is map && slidesFileOk(d.get('slidesFile', {}))
+        && d.get('changedAt', request.time) == request.time;
+    }
+    function mayEditDeck(d) { return isAdmin() || (isMember() && d.createdBy == request.auth.uid); }
+    match /decks/{did} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['title', 'tags', 'by', 'about', 'date', 'slidesFile', 'createdBy', 'createdAt', 'changedAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && deckOk(request.resource.data);
+      allow update: if mayEditDeck(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'tags', 'by', 'about', 'date', 'slidesFile', 'changedAt'])
+        && deckOk(request.resource.data);
+      allow delete: if mayEditDeck(resource.data);
+    }
+
     // Journal club sessions: any member plans one (and is its creator); the creator, the presenter, a member
     // coordinator and admins edit the plan and fill in the summary, slides (slidesFile) and discussion until it is locked.
     // Only admins lock a session or change its discussion-form override; admins and the creator delete it.
