@@ -29,8 +29,16 @@ export function loadJobState(uid, store) {
   return { counts: {}, missing: [], total: s.ids.length, done: 0, ...s };
 }
 
-// A dropped connection (fetch throws a TypeError), a Firestore "unavailable", or a 5xx answer.
-export const isTransient = (e) => e instanceof TypeError || /^HTTP 5\d\d/.test(e?.message || '') || ['unavailable', 'deadline-exceeded'].includes(e?.code);
+// A dropped connection (fetch rejects with a TypeError whose message is a network one, or the device is offline), a
+// Firestore "unavailable", or a 429/5xx answer. Any other TypeError (a bug, a PDF.js failure) is not transient.
+const NETWORK_MESSAGE = /failed to fetch|load failed|network|fetch|offline|connection|internet|timed? ?out/i;
+export const isTransient = (e) => {
+  if (e instanceof TypeError) return globalThis.navigator?.onLine === false || NETWORK_MESSAGE.test(e.message || '');
+  return e?.status === 0 || e?.status === 429 || e?.status >= 500 || /^HTTP (5\d\d|429)\b/.test(e?.message || '') || ['unavailable', 'deadline-exceeded'].includes(e?.code);
+};
+
+// Answers that mean "try again": a server error or being rate limited.
+export const retryStatus = (s) => s >= 500 || s === 429;
 
 export const httpError = (r) => Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
 

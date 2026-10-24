@@ -12,7 +12,7 @@ import { refreshId, refreshChanges, fillChanges } from './refresh.js';
 import { vancouverList, bibtex } from './cite.js';
 import { findDuplicates, pickKeep, keepAllowed, mergePaper, mergeNotes } from './dupes.js';
 import { cleanPaper } from './abstract.js';
-import { saveState, clearState, loadJobState, retrying, isTransient, httpError, FAIL_RUN } from './jobstate.js';
+import { saveState, clearState, loadJobState, retrying, isTransient, retryStatus, httpError, FAIL_RUN } from './jobstate.js';
 
 const api = (c, path, init = {}) => c.user.getIdToken().then((t) => fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${t}` } }));
 const isAdmin = (c) => c.member.role === 'admin';
@@ -207,7 +207,20 @@ async function holdScreen() {
 }
 function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
 
-const save = (j) => saveState(j.uid, 'job', { kind: j.kind, ids: [...j.inflight, ...j.queue], counts: j.counts, missing: j.missing, total: j.total, done: j.done, started: j.started });
+// The saved list is every paper not yet done: in flight, failed but not yet classed, and queued. Writing it re-serialises
+// the whole list, so after a paper it is throttled to once per SAVE_EVERY; pausing, hiding the page and finishing write at once.
+const SAVE_EVERY = 2000;
+function save(j) {
+  clearTimeout(j.saveTimer); j.saveTimer = null;
+  if (j.cancelled) return;
+  j.savedAt = Date.now();
+  saveState(j.uid, 'job', { kind: j.kind, ids: [...j.inflight, ...j.fails.map((f) => f.id), ...j.queue], counts: j.counts, missing: j.missing, total: j.total, done: j.done, started: j.started });
+}
+function saveSoon(j) {
+  if (j.saveTimer || j.cancelled) return;
+  const wait = SAVE_EVERY - (Date.now() - (j.savedAt || 0));
+  if (wait <= 0) save(j); else j.saveTimer = setTimeout(() => save(j), wait);
+}
 
 // Start (or, with `resume`, carry on) a job: `ids` still to do, `resume` the saved counts. The list and counts are saved
 // after every paper, so closing the tab only pauses it.
@@ -215,7 +228,7 @@ function startJob(c, kind, ids, resume, onChange) {
   const k = KINDS[kind];
   job = { kind, uid: c.user.uid, always: k.always, rows: k.rows, step: k.step(c), onDone: () => { if (k.dirty) dirty(); onChange?.(); },
     total: resume?.total ?? ids.length, done: resume?.done ?? 0, counts: Object.fromEntries(k.rows.map(([key]) => [key, 0])),
-    missing: [], queue: [...(resume?.ids ?? ids)], inflight: new Set(), fails: [], paused: null, running: true, stop: false, started: Date.now() };
+    missing: [], queue: [...(resume?.ids ?? ids)], inflight: new Set(), fails: [], paused: null, running: false, stop: false, cancelled: false, started: Date.now() };
   Object.assign(job.counts, resume?.counts);
   job.missing = [...(resume?.missing || [])];
   job.done0 = job.done;
@@ -223,7 +236,9 @@ function startJob(c, kind, ids, resume, onChange) {
   return drive(job);
 }
 
+// One drive at a time: a call while the previous run is still settling (workers in flight after a pause) does nothing.
 async function drive(j) {
+  if (j.running || j.cancelled) return;
   const k = KINDS[j.kind];
   j.running = true; j.paused = null; j.stop = false; j.fails = [];
   tell();
@@ -238,24 +253,29 @@ async function drive(j) {
       const id = j.queue.shift();
       if (id === undefined) return;
       j.inflight.add(id);
+      const began = Date.now();
       let out, err = null;
       try { out = await retrying(() => j.step(id), { stopped: () => j.stop }); } catch (e) { console.error(e); err = e; }
       j.inflight.delete(id);
-      if (!err) { for (const f of j.fails.splice(0)) record(f, 'failed'); record(id, out); } // isolated failures count as failed
-      else if (!isTransient(err)) record(id, 'failed');
+      if (!err) { // a failure from before this paper's request began was isolated (the connection worked afterwards): it counts as failed
+        for (const f of j.fails.filter((x) => x.at < began)) { j.fails.splice(j.fails.indexOf(f), 1); record(f.id, 'failed'); }
+        record(id, out);
+      } else if (!isTransient(err)) record(id, 'failed');
       else {
-        j.fails.push(id);
-        if (j.fails.length >= FAIL_RUN) { j.paused = 'connection'; j.queue.unshift(...j.fails.splice(0)); } // not used up: they run again on Resume
+        j.fails.push({ id, at: Date.now() });
+        if (j.fails.length >= FAIL_RUN) { j.paused = 'connection'; j.queue.unshift(...j.fails.splice(0).map((f) => f.id)); } // not used up: they run again on Resume
       }
-      save(j);
+      if (j.paused) save(j); else saveSoon(j);
       tell();
     }
   };
   await Promise.all(Array.from({ length: k.concurrency }, worker));
-  if (j.paused) j.queue.unshift(...j.fails.splice(0)); // workers still in flight at the pause: their papers run again on Resume
-  else for (const f of j.fails.splice(0)) record(f, 'failed');
+  if (j.cancelled) { j.paused = null; j.fails = []; }
+  else if (j.paused) j.queue.unshift(...j.fails.splice(0).map((f) => f.id)); // workers still in flight at the pause: their papers run again on Resume
+  else for (const f of j.fails.splice(0)) record(f.id, 'failed');
   j.running = false;
   freeScreen();
+  clearTimeout(j.saveTimer); j.saveTimer = null;
   if (j.paused) save(j); else clearState(j.uid, 'job');
   j.onDone?.();
   tell();
@@ -263,20 +283,22 @@ async function drive(j) {
 
 // A job paused for lack of connection carries on by itself when the page is visible again, and the screen lock is retaken.
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !job) return;
+  if (!job) return;
+  if (document.visibilityState === 'hidden') { if (job.running) save(job); return; }
   if (job.running) holdScreen();
-  else if (job.paused) drive(job);
+  else if (job.paused && !job.cancelled) drive(job);
 });
+if (typeof window !== 'undefined') window.addEventListener('pagehide', () => { if (job?.running) save(job); });
 
 export const savedJob = (uid) => loadJobState(uid);
 export const jobLabel = (kind) => KINDS[kind]?.label || 'Job';
 export const jobName = (kind) => KINDS[kind]?.name || 'Job';
-export const discardJob = (uid) => { clearState(uid, 'job'); if (job && !job.running) job = null; tell(); };
+export const discardJob = (uid) => { if (job?.uid === uid) { job.cancelled = true; job.stop = true; clearTimeout(job.saveTimer); } clearState(uid, 'job'); if (job && !job.running) job = null; tell(); };
 
 // Carry on a saved job (after a reload or a pause); `onChange` redraws the page that started it.
 export function resumeJob(c, onChange, onSelect) {
   if (job?.running) return jobSheet(c, onSelect);
-  if (job?.paused && job.uid === c.user.uid) { drive(job); return jobSheet(c, onSelect); }
+  if (job?.paused && job.uid === c.user.uid) { drive(job); return jobSheet(c, onSelect); } // drive() waits if the last run is still settling
   const s = savedJob(c.user.uid);
   if (!s || !KINDS[s.kind]) return;
   startJob(c, s.kind, null, s, onChange);
@@ -297,7 +319,7 @@ const refreshStep = (c) => async (id) => {
   const p = snap.data(), key = refreshId(p);
   if (!key) return 'noId';
   const r = await api(c, '/api/lookup?id=' + encodeURIComponent(key));
-  if (r.status >= 500) throw httpError(r);
+  if (retryStatus(r.status)) throw httpError(r);
   if (!r.ok) return 'notFound';
   const fresh = await r.json();
   const ch = refreshChanges(p, fresh);
@@ -321,7 +343,7 @@ const fillStep = (c) => {
     const p = snap.data();
     if (!p.file) return 'noText';
     const r = await api(c, `/api/enrich/${id}`, { method: 'POST', body: JSON.stringify({ ai: true }), headers: { 'Content-Type': 'application/json' } });
-    if (r.status >= 500) throw httpError(r);
+    if (retryStatus(r.status)) throw httpError(r);
     if (!r.ok) return 'failed';
     const res = await r.json();
     if (!res.hasText) return 'noText';
@@ -337,13 +359,13 @@ const fillStep = (c) => {
 // Admin: re-extract the PDFs in the browser and send their text to the search index.
 const reindexStep = (c) => async (id) => {
   const r = await api(c, `/api/file/${id}`);
-  if (r.status >= 500) throw httpError(r);
+  if (retryStatus(r.status)) throw httpError(r);
   if (!r.ok) return 'failed';
   const { extractPages } = await import('./pdf.js');
   const pages = await extractPages(await r.arrayBuffer());
   if (!pages.some((t) => t.trim())) return 'empty';
   const ix = await api(c, `/api/index/${id}`, { method: 'PUT', body: JSON.stringify({ pages }), headers: { 'Content-Type': 'application/json' } });
-  if (ix.status >= 500) throw httpError(ix);
+  if (retryStatus(ix.status)) throw httpError(ix);
   if (!ix.ok) return 'failed';
   markIndexed(id);
   return 'indexed';
@@ -357,15 +379,26 @@ const KINDS = {
   reindex: { label: 'Reindexing', name: 'Reindex PDFs', rows: REINDEX_ROWS, missing: REFRESH_MISSING, always: [], concurrency: 1, dirty: false, step: reindexStep },
 };
 
+// A new job would overwrite the saved place of one that is running, paused or waiting on this device: show it instead.
+function canStartJob(c, onSelect) {
+  if (job?.running) { jobSheet(c, onSelect); return false; }
+  if (job?.paused && job.uid === c.user.uid || savedJob(c.user.uid)) {
+    if (confirm('Another job is paused. Starting a new one discards its saved place. OK to start the new one, Cancel to keep it (use Resume).')) { discardJob(c.user.uid); return true; }
+    if (job?.paused) jobSheet(c, onSelect);
+    return false;
+  }
+  return true;
+}
+
 export function refreshSelected(c, ids, onChange, onSelect) {
-  if (job?.running) return jobSheet(c, onSelect);
+  if (!canStartJob(c, onSelect)) return;
   const withId = ids.filter((id) => refreshId(current().papers.get(id) || {}));
   startJob(c, 'refresh', [...withId, ...ids.filter((id) => !withId.includes(id))], null, onChange);
   jobSheet(c, onSelect);
 }
 
 export function fillSelected(c, ids, onChange, onSelect) {
-  if (job?.running) return jobSheet(c, onSelect);
+  if (!canStartJob(c, onSelect)) return;
   startJob(c, 'fill', ids, null, onChange);
   jobSheet(c, onSelect);
 }
@@ -382,7 +415,7 @@ export async function indexedIds(c, fresh = false) {
 export const markIndexed = (id) => indexedCache?.add(id);
 
 export function reindexSelected(c, ids, onChange, onSelect) {
-  if (job?.running) return jobSheet(c, onSelect);
+  if (!canStartJob(c, onSelect)) return;
   const lib = current();
   startJob(c, 'reindex', ids.filter((id) => lib.papers.get(id)?.file), null, onChange);
   jobSheet(c, onSelect);
@@ -420,13 +453,13 @@ export function jobSheet(c, onSelect) {
       m.append(b);
     }
     d.querySelector('#jstop').hidden = !job.running && !job.paused;
-    d.querySelector('#jresume').hidden = !job.paused;
+    d.querySelector('#jresume').hidden = !job.paused || job.running; // only once the last run has fully settled
     d.querySelector('#jhide').textContent = job.running || job.paused ? 'Hide' : 'Close';
   };
   const off = onJob(draw);
   d.addEventListener('close', () => off());
-  d.querySelector('#jstop').onclick = () => { if (job.running) job.stop = true; else { discardJob(job.uid); d.close(); } };
-  d.querySelector('#jresume').onclick = () => drive(job);
+  d.querySelector('#jstop').onclick = () => { const was = job.running; discardJob(job.uid); if (!was) d.close(); };
+  d.querySelector('#jresume').onclick = () => { if (!job.running) drive(job); };
   d.querySelector('#jhide').onclick = () => d.close();
   draw();
 }

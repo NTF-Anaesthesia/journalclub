@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { saveState, loadState, clearState, loadJobState, retrying, isTransient, httpError, RETRY_DELAYS, FAIL_RUN } from '../src/jobstate.js';
+import { saveState, loadState, clearState, loadJobState, retrying, isTransient, retryStatus, httpError, RETRY_DELAYS, FAIL_RUN } from '../src/jobstate.js';
 
 const memory = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), m }; };
 
@@ -58,6 +58,18 @@ test('network errors and 5xx are retried with backoff 2, 5, 15 s; other errors a
 
 test('a stop request ends the retries', async () => {
   let n = 0;
-  await assert.rejects(retrying(async () => { n++; throw new TypeError('offline'); }, { sleep: async () => {}, stopped: () => n >= 2 }));
+  await assert.rejects(retrying(async () => { n++; throw new TypeError('Failed to fetch'); }, { sleep: async () => {}, stopped: () => n >= 2 }));
   assert.equal(n, 2);
+});
+
+test('only real network failures, 429 and 5xx are transient', () => {
+  for (const m of ['Failed to fetch', 'NetworkError when attempting to fetch resource.', 'Load failed']) assert.equal(isTransient(new TypeError(m)), true, m);
+  assert.equal(isTransient(new TypeError("Cannot read properties of undefined (reading 'x')")), false, 'a programming error fails the paper');
+  assert.equal(isTransient(new TypeError('pdf.getPage is not a function')), false);
+  assert.equal(isTransient(httpError({ status: 429 })), true);
+  assert.equal(isTransient(httpError({ status: 502 })), true);
+  assert.equal(isTransient(Object.assign(new Error('x'), { status: 0 })), true);
+  assert.equal(isTransient(httpError({ status: 400 })), false);
+  assert.equal(isTransient(new Error('Failed to fetch')), false, 'only a TypeError counts as fetch dropping');
+  assert.deepEqual([200, 404, 429, 500].map(retryStatus), [false, false, true, true]);
 });
