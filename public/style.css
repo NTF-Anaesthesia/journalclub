@@ -164,6 +164,28 @@ a.plain { color:inherit; text-decoration:none; }
 .session-head, .paper-card { margin-left:var(--app-s1); margin-right:var(--app-s1); }
 .abstract-open { padding:0 var(--app-s1); }
 
+/* Session page: overflow button, tappable paper card, take-home points, members' points, my notes */
+.session-head { position:relative; }
+.more-btn { position:absolute; top:var(--app-s1); right:var(--app-s1); min-width:44px; min-height:44px; padding:0; border:0; border-radius:var(--app-r-full); background:none; font-size:1.5rem; line-height:1; color:var(--app-ink); cursor:pointer; }
+.paper-card { position:relative; }
+.paper-card a.card-link { color:inherit; text-decoration:none; }
+.paper-card a.card-link::after { content:""; position:absolute; inset:0; }
+.paper-card .card-pill { position:absolute; top:var(--app-s3); right:var(--app-s3); z-index:1; }
+.note-peek { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-line; overflow-wrap:anywhere; }
+.note-peek.faint { color:var(--app-muted); font-style:italic; }
+.takehome { margin:var(--app-s1) 0; padding-left:var(--app-s5, 22px); } .takehome li { margin:var(--app-s1) 0; }
+#stake, .sessionpage > h2, .sessionpage > p, .sessionpage > ul, .sessionpage > textarea, #sdisc { padding-left:var(--app-s1); padding-right:var(--app-s1); }
+.sessionpage > textarea { width:calc(100% - 2 * var(--app-s1)); box-sizing:border-box; }
+li.pt { align-items:flex-start; flex-wrap:nowrap; }
+.pt-text { flex:1; min-width:0; }
+.pt-acts { display:flex; align-items:center; gap:var(--app-s1); flex:none; }
+.plus-btn { min-height:44px; min-width:44px; padding:0 var(--app-s3); border:1px solid var(--app-line-strong, #d7d2c8); border-radius:var(--app-r-full); background:none; color:var(--app-ink); cursor:pointer; }
+.plus-btn[aria-pressed="true"] { background:var(--app-wine); border-color:var(--app-wine); color:var(--app-ivory); }
+button.link.danger { color:var(--app-bad); }
+.takelines { display:block; margin-top:2px; max-width:100%; } .takeline { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--app-t-subhead); color:var(--app-muted); }
+.next .takeline { color:#eadbd6; }
+#sshare2 { gap:var(--app-s3); }
+
 /* In-app PDF reader */
 .reader-bar { display:flex; align-items:center; gap:var(--app-s2); flex-wrap:wrap; margin:0 0 var(--app-s1); }
 .reader-share { margin-left:auto; display:flex; gap:var(--app-s1); }

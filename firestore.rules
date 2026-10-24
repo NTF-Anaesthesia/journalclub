@@ -214,6 +214,20 @@ service cloud.firestore {
             || (request.resource.data.noted is map && request.resource.data.noted.size() <= 3000))
           && (!('notedScan' in request.resource.data) || request.resource.data.notedScan is number)
           && request.resource.data.updatedAt == request.time));
+
+      // My private notes on a journal club session (id = the session id). Owner only: not readable by other members or
+      // admins, and not part of any collection-group read.
+      match /sessionNotes/{sid} {
+        allow read: if isMember() && request.auth.uid == uid;
+        allow write: if isMember() && request.auth.uid == uid
+          && (request.method == 'delete' || (
+            request.resource.data.keys().hasOnly(['text', 'paperId', 'paperTitle', 'date', 'updatedAt'])
+            && request.resource.data.text is string && request.resource.data.text.size() <= 8000
+            && request.resource.data.get('paperId', '') is string && request.resource.data.get('paperId', '').size() <= 100
+            && request.resource.data.get('paperTitle', '') is string && request.resource.data.get('paperTitle', '').size() <= 400
+            && (request.resource.data.get('date', null) == null || request.resource.data.get('date', null) is timestamp)
+            && request.resource.data.updatedAt == request.time));
+      }
     }
 
     // A member's private session notes: only they read them (admins included). The session page writes them. The paper
@@ -310,15 +324,28 @@ service cloud.firestore {
               'teamsUrl', 'discussion', 'slidesFile'])));
       allow delete: if isAdmin() || (isMember() && resource.data.get('createdBy', '') == request.auth.uid);
 
-      // One take-home point per member per session; read-only once the session is locked.
+      // One take-home point per member per session; read-only once the session is locked. `plus` is the set of members who
+      // agree ("me too"): the point's owner never changes it, and anyone else may add or remove only their own uid.
+      function sessionOpen() { return !get(/databases/$(database)/documents/sessions/$(sid)).data.get('locked', false); }
       match /points/{uid} {
-        allow write: if isMember() && request.auth.uid == uid
-          && !get(/databases/$(database)/documents/sessions/$(sid)).data.get('locked', false)
+        allow write: if isMember() && request.auth.uid == uid && sessionOpen()
           && (request.method == 'delete' || (
-            request.resource.data.keys().hasOnly(['text', 'name', 'updatedAt'])
+            request.resource.data.keys().hasOnly(['text', 'name', 'updatedAt', 'plus'])
             && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 500
             && request.resource.data.name is string && request.resource.data.name.size() <= 120
-            && request.resource.data.updatedAt == request.time));
+            && request.resource.data.updatedAt == request.time
+            && request.resource.data.get('plus', []) == (resource == null ? [] : resource.data.get('plus', []))));
+        allow update: if isMember() && request.auth.uid != uid && sessionOpen()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['plus'])
+          && request.resource.data.plus is list && request.resource.data.plus.size() <= 300
+          && ((request.resource.data.plus.hasAll(resource.data.get('plus', []))
+               && request.resource.data.plus.size() == resource.data.get('plus', []).size() + 1
+               && request.resource.data.plus.hasAny([request.auth.uid])
+               && !resource.data.get('plus', []).hasAny([request.auth.uid]))
+            || (resource.data.get('plus', []).hasAll(request.resource.data.plus)
+               && request.resource.data.plus.size() == resource.data.get('plus', []).size() - 1
+               && resource.data.get('plus', []).hasAny([request.auth.uid])
+               && !request.resource.data.plus.hasAny([request.auth.uid])));
         allow delete: if isAdmin();
       }
     }
