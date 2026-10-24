@@ -19,6 +19,12 @@ async function signInAs(browser, email, name, role) {
   return page;
 }
 
+// Edit session lives in the ⋯ menu on the session page.
+async function editFromMenu(page) {
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('dialog', { name: 'Session actions' }).getByRole('button', { name: 'Edit session' }).click();
+}
+
 test('a member plans a session from a paper page; the paper and the list show it; vote and rota are gone', async ({ browser }) => {
   const admin = await signInAs(browser, 'chief@example.org', 'Chief Admin', 'admin');
   for (const [id, title] of [['pa', 'Tranexamic acid in hip fracture'], ['pb', 'Sugammadex and pulmonary complications']]) {
@@ -52,7 +58,7 @@ test('a member plans a session from a paper page; the paper and the list show it
   await expect(res.getByText('Coordinator: Dr Consultant')).toBeVisible();
 
   // A presenter name that matches no member warns before saving (they could not edit the summary or slides).
-  await res.getByRole('link', { name: 'Edit session' }).click();
+  await editFromMenu(res);
   await res.getByLabel('Presenter').fill('Dr Nobody');
   await res.locator('#saveall').click();
   await expect(res.getByText(/Dr Nobody isn't linked to a member account/)).toBeVisible();
@@ -79,7 +85,7 @@ test('a member plans a session from a paper page; the paper and the list show it
   const sid = res.url().split('/session/')[1];
   await expect(res.getByLabel('Summary')).toHaveCount(0);
   await expect(res.locator('#saveall')).toHaveCount(0);
-  await res.getByRole('link', { name: 'Edit session' }).click();
+  await editFromMenu(res);
   await expect(res.getByRole('heading', { name: 'Edit session' })).toBeVisible();
   await res.getByLabel('Summary').fill('Reversal choice and PPCs: no difference in the primary outcome.');
   await expect(res.locator('#pfmsg')).toHaveText('Unsaved changes');
@@ -93,7 +99,7 @@ test('a member plans a session from a paper page; the paper and the list show it
   await res.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(res.locator('#pfmsg')).toHaveText('Saved.');
 
-  // Slides: a PowerPoint upload (the Worker is faked here) shows Open PDF and Download PowerPoint.
+  // Slides: a PowerPoint upload (the Worker is faked here) shows Open slides and Download PowerPoint.
   const sent = [];
   await res.route('**/api/slides/**', async (route) => {
     const r = route.request();
@@ -114,10 +120,10 @@ test('a member plans a session from a paper page; the paper and the list show it
   expect(sent.slice(0, 3)).toEqual(['POST ', 'PUT Reversal%20talk.pptx', 'GET ']);
   await res.getByRole('link', { name: 'Done' }).click();
   await expect(res.locator('#ssum')).toHaveText('Reversal choice and PPCs: no difference in the primary outcome.');
-  await expect(res.getByRole('button', { name: 'Open PDF' })).toBeVisible();
+  await expect(res.getByRole('link', { name: 'Open slides' })).toHaveAttribute('href', `#/view/sess_${sid}`);
   await expect(res.getByRole('button', { name: 'Download PowerPoint' })).toBeVisible();
   await expect(res.locator('#sslides')).toContainText('Reversal talk.pptx · 2.3 MB');
-  await res.getByRole('link', { name: 'Edit session' }).click();
+  await editFromMenu(res);
   res.once('dialog', (d) => d.accept());
   await res.getByRole('button', { name: 'Remove slides' }).click();
   await expect(res.locator('#scur')).toHaveText('No slides yet.');
@@ -126,7 +132,10 @@ test('a member plans a session from a paper page; the paper and the list show it
   const other = await signInAs(browser, 'other@example.org', 'Olu Other', 'member');
   await other.goto(`/?emulator=${PROJECT}#/session/` + sid);
   await expect(other.getByText('Presenter: Ada Resident')).toBeVisible();
-  await expect(other.getByRole('link', { name: 'Edit session' })).toHaveCount(0);
+  await other.getByRole('button', { name: 'More actions' }).click();
+  await expect(other.getByRole('dialog', { name: 'Session actions' }).getByRole('button', { name: 'Refresh' })).toBeVisible();
+  await expect(other.getByRole('button', { name: 'Edit session' })).toHaveCount(0);
+  await other.keyboard.press('Escape');
   await other.goto(`/?emulator=${PROJECT}#/plan/-/` + sid);
   await expect(other.getByRole('heading', { name: 'Not allowed' })).toBeVisible();
   res.once('dialog', (d) => d.accept());
@@ -169,7 +178,7 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
 
   // The presenter fills in the new form.
   await pres.goto(`/?emulator=${PROJECT}#/session/disc1`);
-  await pres.getByRole('link', { name: 'Edit session' }).click();
+  await editFromMenu(pres);
   await expect(pres.getByLabel('Local relevance')).toBeVisible();
   await pres.getByLabel('Take-home points').fill('Fewer delirium days\nMore bradycardia');
   await pres.getByLabel('Would this change our practice?').selectOption('Maybe');
@@ -182,13 +191,11 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
 
   // A member adds one point and edits it.
   await mem.goto(`/?emulator=${PROJECT}#/session/disc1`);
-  await mem.getByRole('link', { name: 'Add your point' }).click();
-  await mem.getByLabel('Your take-home point').fill('Watch the heart rate');
-  await mem.getByRole('button', { name: 'Save' }).click();
-  await expect(mem.locator('#pmsg')).toContainText('Saved');
-  await mem.goto(`/?emulator=${PROJECT}#/session/disc1`);
-  await expect(mem.getByText('Watch the heart rate')).toBeVisible();
-  await expect(mem.getByRole('link', { name: 'Edit your point' })).toBeVisible();
+  await mem.locator('#sshare').click();
+  await mem.getByRole('dialog', { name: 'Share your point' }).getByLabel('Your take-home point').fill('Watch the heart rate');
+  await mem.getByRole('dialog', { name: 'Share your point' }).getByRole('button', { name: 'Save' }).click();
+  await expect(mem.locator('#spts')).toContainText('Watch the heart rate');
+  await expect(mem.locator('#sshare')).toHaveText('Edit your point');
   await expect(mem.locator('#spts')).toContainText('(you)');
   // Members can't edit the discussion or set the coordinator.
   await expect(mem.locator('#saveall')).toHaveCount(0);
@@ -216,7 +223,7 @@ test('admin edits the discussion form; presenter fills it; a member adds a point
   await expect(admin.getByRole('heading', { name: 'Local relevance' })).toHaveCount(0);
 
   // "Use the default form" switches the session back to the default (Local relevance).
-  await admin.getByRole('link', { name: 'Edit session' }).click();
+  await editFromMenu(admin);
   await admin.getByRole('button', { name: 'Use the default form' }).click();
   await expect(admin.locator('#dfields').getByLabel('Local relevance')).toHaveValue('Ward patients only');
 });

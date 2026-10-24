@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_FIELDS, normalizeFields, snapshot, answerText, sessionFields, missingRequired, inJoinWindow, startMillis, csvExport, sessionMarkdown } from '../src/discussion.js';
+import { DEFAULT_FIELDS, normalizeFields, snapshot, answerText, sessionFields, missingRequired, inJoinWindow, startMillis, csvExport, sessionMarkdown, takeHomePoints, rankPoints, authorsShort } from '../src/discussion.js';
 
 const ts = (iso) => { const d = new Date(`${iso}T00:00:00`); return { toDate: () => d, toMillis: () => d.getTime() }; };
 
@@ -59,4 +59,23 @@ test("an admin's form override for one session wins over the copy its discussion
 
 test('an unfilled session uses the current template', () => {
   assert.equal(sessionFields({}, DEFAULT_FIELDS), DEFAULT_FIELDS);
+});
+
+test('take-home points read from the discussion answers, as a list or as lines', () => {
+  assert.deepEqual(takeHomePoints({ discussion: { answers: { takehome: ['A', ' ', 'B'] } } }), ['A', 'B']);
+  assert.deepEqual(takeHomePoints({ discussion: { answers: { takehome: 'A\nB\n\nC' } } }), ['A', 'B', 'C']);
+  assert.deepEqual(takeHomePoints({}), []);
+});
+
+test("members' points rank by agreement, then newest; a point still saving counts as newest", () => {
+  const at = (n) => ({ toMillis: () => n });
+  const pts = [{ text: 'old', plus: [], updatedAt: at(1) }, { text: 'loved', plus: ['a', 'b'], updatedAt: at(0) },
+    { text: 'new', updatedAt: at(5) }, { text: 'saving', updatedAt: null }, { text: 'liked', plus: ['a'], updatedAt: at(3) }];
+  assert.deepEqual(rankPoints(pts, 9).map((p) => p.text), ['loved', 'liked', 'saving', 'new', 'old']);
+});
+
+test('authors: three, then et al.', () => {
+  assert.equal(authorsShort(['A', 'B', 'C']), 'A, B, C');
+  assert.equal(authorsShort(['A', 'B', 'C', 'D']), 'A, B, C et al.');
+  assert.equal(authorsShort(), '');
 });

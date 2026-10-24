@@ -42,6 +42,18 @@ export const snapshot = (fields) => normalizeFields(fields).map(({ id, label, ty
 
 const asList = (v) => (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean);
 
+// The presenter's take-home points on a session (the discussion field `takehome`), as a list of lines.
+export const takeHomePoints = (s) => asList(s?.discussion?.answers?.takehome);
+
+// Members' points, most agreed first (ties: newest first). `plus` lists the uids who agree.
+export function rankPoints(points, now = Date.now()) {
+  const ms = (p) => (p.updatedAt?.toMillis ? p.updatedAt.toMillis() : now);
+  return [...points].sort((a, b) => (b.plus?.length || 0) - (a.plus?.length || 0) || ms(b) - ms(a));
+}
+
+// "A, B, C et al." for a paper's author list.
+export const authorsShort = (a = []) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} et al.` : a.join(', '));
+
 // What one field's answer reads as in text, Markdown and CSV.
 export function answerText(f, answers) {
   const v = answers?.[f.id];
