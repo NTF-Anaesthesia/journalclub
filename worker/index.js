@@ -48,7 +48,6 @@ async function docAs(member, path, fetchFn) {
 }
 const paperAs = (member, paperId, fetchFn) => docAs(member, `papers/${paperId}`, fetchFn);
 const getAs = docAs;const docId = (d) => d.name.split('/').pop();
-const strings = (v) => (v?.arrayValue?.values || []).map((x) => x.stringValue ?? '');
 
 // The shared notes on one paper, read as the caller. A private note (shared is not true) is never indexed, not even
 // for its writer, so search shows the same notes to everyone. The query filters on shared == true because the rules
@@ -65,31 +64,24 @@ async function noteTexts(member, paperId, fetchFn) {
   return (await r.json()).map((x) => x.document && field(x.document, 'text')).filter(Boolean);
 }
 
-// Admin, one batch per call so a call stays within the Worker's subrequest and D1 query limits.
-// Phase "texts" moves the old Firestore texts/<paper> pages into D1; phase "notes" indexes every paper's notes.
+// Admin, one batch per call so a call stays within the Worker's subrequest and D1 query limits (1 list + 25 note
+// queries). Indexes every paper's shared notes. The old "texts" phase is gone: it copied stale Firestore pages over
+// newer D1 text, so a cursor that still says "texts" simply starts the notes phase.
 async function backfill(member, env, body, fetchFn) {
-  const phase = body.phase === 'notes' ? 'notes' : 'texts';
-  const token = typeof body.pageToken === 'string' ? `&pageToken=${encodeURIComponent(body.pageToken)}` : '';
-  let indexed = 0;
-  if (phase === 'texts') {
-    const out = await getAs(member, `texts?pageSize=5${token}`, fetchFn);
-    if (!out) return json({ error: 'Could not read the stored texts' }, 502);
-    for (const d of out.documents || []) {
-      const pages = cleanPages(strings(d.fields?.pages).slice(0, 2000));
-      if (pages) { await indexPages(env.SEARCH, docId(d), pages); indexed++; }
-    }
-    const next = out.nextPageToken ? { phase, pageToken: out.nextPageToken } : { phase: 'notes' };
-    return json({ phase, indexed, next });
-  }
-  const out = await getAs(member, `papers?pageSize=10&mask.fieldPaths=title${token}`, fetchFn);
+  const token = body.phase === 'notes' && typeof body.pageToken === 'string' ? `&pageToken=${encodeURIComponent(body.pageToken)}` : '';
+  const out = await getAs(member, `papers?pageSize=25&mask.fieldPaths=title${token}`, fetchFn);
   if (!out) return json({ error: 'Could not read the papers' }, 502);
-  for (const d of out.documents || []) {
-    const texts = await noteTexts(member, docId(d), fetchFn).catch(() => null);
-    if (!texts) continue; // could not read: leave the row as it is
-    await indexNotes(env.SEARCH, docId(d), texts); // no shared notes clears the row
-    if (texts.length) indexed++;
+  const docs = out.documents || [];
+  let indexed = 0;
+  for (let i = 0; i < docs.length; i += 5) {
+    await Promise.all(docs.slice(i, i + 5).map(async (d) => {
+      const texts = await noteTexts(member, docId(d), fetchFn).catch(() => null);
+      if (!texts) return; // could not read: leave the row as it is
+      await indexNotes(env.SEARCH, docId(d), texts); // no shared notes clears the row
+      if (texts.length) indexed++;
+    }));
   }
-  return json({ phase, indexed, next: out.nextPageToken ? { phase, pageToken: out.nextPageToken } : null });
+  return json({ phase: 'notes', indexed, next: out.nextPageToken ? { phase: 'notes', pageToken: out.nextPageToken } : null });
 }
 
 async function searchApi(request, url, env, member, fetchFn) {

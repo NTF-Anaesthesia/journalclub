@@ -166,30 +166,35 @@ test('removing the PDF drops its pages; removing the paper drops everything', as
   assert.equal((await find(env, W, 'remifentanil')).length, 0);
 });
 
-test('admin backfill moves texts/* into D1 in batches, then indexes notes', async () => {
-  const texts = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`b${i}`, [`Cover ${i}`, `Backfilled word zygomatic${i}`]]));
-  const bpapers = { ...papers, ...Object.fromEntries(Object.keys(texts).map((id) => [id, { addedBy: 'mem1' }])) };
-  const W = world({ members, papers: bpapers, texts, notes: { b11: ['Noted tranexamic'] } });
+test('admin backfill indexes notes only, 25 papers per call, and ignores old texts cursors', async () => {
+  const ids = Array.from({ length: 30 }, (_, i) => `b${i}`);
+  const bpapers = { ...papers, ...Object.fromEntries(ids.map((id) => [id, { addedBy: 'mem1' }])) };
+  // Stale Firestore pages must never reach D1: Rebuild no longer copies texts/*.
+  const texts = Object.fromEntries(ids.map((id) => [id, ['Cover', `Stale word zygomatic${id}`]]));
+  const W = world({ members, papers: bpapers, texts, notes: { b11: ['Noted tranexamic'], b29: ['Noted lastpage'] } });
   const env = { SEARCH: d1.db };
   const call = (body, uid = 'adm') => api(req('/api/backfill', uid, { method: 'POST', body: JSON.stringify(body) }), env, W);
   assert.equal((await call({}, 'mem1')).status, 403);
+  // An old cursor in phase "texts" just starts the notes phase.
+  assert.equal((await (await call({ phase: 'texts', pageToken: 'stale' })).json()).phase, 'notes');
   let body = {}, calls = 0, indexed = 0;
   while (body) {
     const r = await call(body);
     assert.equal(r.status, 200);
     const out = await r.json();
+    assert.equal(out.phase, 'notes');
     indexed += out.indexed; calls++;
     body = out.next;
   }
-  assert.ok(calls >= 4, 'texts go 5 per call, then notes');
-  assert.equal(indexed, 13);
-  assert.deepEqual((await find(env, W, 'zygomatic7')).map((h) => [h.paperId, h.page]), [['b7', 2]]);
-  assert.equal((await find(env, W, 'backfilled')).length, 12);
+  assert.ok(calls >= 2, 'notes go 25 per call');
+  assert.equal(indexed, 2);
   assert.equal((await find(env, W, 'tranexamic'))[0].paperId, 'b11');
+  assert.equal((await find(env, W, 'lastpage'))[0].paperId, 'b29');
+  assert.equal((await find(env, W, 'zygomatic')).length, 0, 'texts/* is not copied');
   // Running it again changes nothing.
   body = {};
   while (body) body = (await (await call(body)).json()).next;
-  assert.equal((await find(env, W, 'backfilled')).length, 12);
+  assert.equal((await find(env, W, 'tranexamic')).length, 1);
 });
 
 test('GET /api/indexed lists papers with PDF pages indexed (notes alone do not count), members only', async () => {

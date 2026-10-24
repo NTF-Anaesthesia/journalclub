@@ -82,7 +82,9 @@ form.stack button { align-self:stretch; }
   background:var(--app-surface); color:var(--app-ink); box-shadow:inset 0 0 0 1px var(--app-line); font-weight:400; font-size:var(--app-t-subhead); white-space:nowrap; }
 .chip.on { background:var(--app-wine); color:var(--app-ivory); box-shadow:none; font-weight:600; }
 .chip.some { background:var(--app-blush); color:var(--app-wine); box-shadow:inset 0 0 0 1.5px var(--app-wine); outline:1.5px dashed var(--app-wine); outline-offset:-1.5px; font-weight:600; }
-.listbar[hidden], .selhead[hidden], .selbar[hidden], #jobline[hidden], #selnote[hidden] { display:none !important; }
+.listbar[hidden], .selhead[hidden], .selbar[hidden], #jobline[hidden], #resumebar[hidden], #rsaved[hidden], #selnote[hidden] { display:none !important; }
+.card > p.resume { margin:0 0 var(--app-s2); padding:var(--app-s1); background:var(--app-blush); border-radius:var(--app-r1, 10px); font-size:var(--app-t-subhead); }
+.resume .link { min-height:44px; padding:0 var(--app-s1); }
 .listbar, .selhead { display:flex; align-items:center; justify-content:space-between; min-height:44px; padding:0 var(--app-s1); margin:0 0 var(--app-s2); }
 button.plain { background:none; padding:0; min-height:44px; display:inline-flex; align-items:center; gap:4px; color:var(--app-ink-soft); font-weight:500; font-size:var(--app-t-subhead); }
 .selhead { background:var(--app-blush); border-radius:var(--app-r-md); padding:0 var(--app-s1); }

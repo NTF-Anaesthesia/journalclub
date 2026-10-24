@@ -12,6 +12,7 @@ import { refreshId, refreshChanges, fillChanges } from './refresh.js';
 import { vancouverList, bibtex } from './cite.js';
 import { findDuplicates, pickKeep, keepAllowed, mergePaper, mergeNotes } from './dupes.js';
 import { cleanPaper } from './abstract.js';
+import { saveState, clearState, loadJobState, retrying, isTransient, httpError, FAIL_RUN } from './jobstate.js';
 
 const api = (c, path, init = {}) => c.user.getIdToken().then((t) => fetch(path, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${t}` } }));
 const isAdmin = (c) => c.member.role === 'admin';
@@ -198,21 +199,88 @@ const tell = () => listeners.forEach((f) => f());
 export const onJob = (f) => { listeners.add(f); return () => listeners.delete(f); };
 
 const REFRESH_MISSING = ['noAbstract', 'notFound', 'noId', 'failed'];
-async function runJob(kind, items, step, rows, onDone, missingKeys = REFRESH_MISSING, always = []) {
-  job = { kind, always, total: items.length, done: 0, counts: Object.fromEntries(rows.map(([k]) => [k, 0])), rows, missing: [], running: true, stop: false, started: Date.now() };
+
+// The screen stays on while a job runs; the browser drops the lock when the page is hidden, so it is taken again then.
+let screenLock = null;
+async function holdScreen() {
+  try { screenLock = (await navigator.wakeLock?.request('screen')) || null; } catch { screenLock = null; }
+}
+function freeScreen() { screenLock?.release?.().catch(() => {}); screenLock = null; }
+
+const save = (j) => saveState(j.uid, 'job', { kind: j.kind, ids: [...j.inflight, ...j.queue], counts: j.counts, missing: j.missing, total: j.total, done: j.done, started: j.started });
+
+// Start (or, with `resume`, carry on) a job: `ids` still to do, `resume` the saved counts. The list and counts are saved
+// after every paper, so closing the tab only pauses it.
+function startJob(c, kind, ids, resume, onChange) {
+  const k = KINDS[kind];
+  job = { kind, uid: c.user.uid, always: k.always, rows: k.rows, step: k.step(c), onDone: () => { if (k.dirty) dirty(); onChange?.(); },
+    total: resume?.total ?? ids.length, done: resume?.done ?? 0, counts: Object.fromEntries(k.rows.map(([key]) => [key, 0])),
+    missing: [], queue: [...(resume?.ids ?? ids)], inflight: new Set(), fails: [], paused: null, running: true, stop: false, started: Date.now() };
+  Object.assign(job.counts, resume?.counts);
+  job.missing = [...(resume?.missing || [])];
+  job.done0 = job.done;
+  save(job);
+  return drive(job);
+}
+
+async function drive(j) {
+  const k = KINDS[j.kind];
+  j.running = true; j.paused = null; j.stop = false; j.fails = [];
   tell();
-  for (const id of items) {
-    if (job.stop) break;
-    let out;
-    try { out = await step(id); } catch (e) { console.error(e); out = 'failed'; }
-    job.counts[out] = (job.counts[out] || 0) + 1;
-    if (missingKeys.includes(out)) job.missing.push(id);
-    job.done++;
-    tell();
-  }
-  job.running = false;
-  onDone?.();
+  await holdScreen();
+  const record = (id, out) => {
+    j.counts[out] = (j.counts[out] || 0) + 1;
+    if (k.missing.includes(out)) j.missing.push(id);
+    j.done++;
+  };
+  const worker = async () => {
+    while (!j.stop && !j.paused) {
+      const id = j.queue.shift();
+      if (id === undefined) return;
+      j.inflight.add(id);
+      let out, err = null;
+      try { out = await retrying(() => j.step(id), { stopped: () => j.stop }); } catch (e) { console.error(e); err = e; }
+      j.inflight.delete(id);
+      if (!err) { for (const f of j.fails.splice(0)) record(f, 'failed'); record(id, out); } // isolated failures count as failed
+      else if (!isTransient(err)) record(id, 'failed');
+      else {
+        j.fails.push(id);
+        if (j.fails.length >= FAIL_RUN) { j.paused = 'connection'; j.queue.unshift(...j.fails.splice(0)); } // not used up: they run again on Resume
+      }
+      save(j);
+      tell();
+    }
+  };
+  await Promise.all(Array.from({ length: k.concurrency }, worker));
+  if (j.paused) j.queue.unshift(...j.fails.splice(0)); // workers still in flight at the pause: their papers run again on Resume
+  else for (const f of j.fails.splice(0)) record(f, 'failed');
+  j.running = false;
+  freeScreen();
+  if (j.paused) save(j); else clearState(j.uid, 'job');
+  j.onDone?.();
   tell();
+}
+
+// A job paused for lack of connection carries on by itself when the page is visible again, and the screen lock is retaken.
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !job) return;
+  if (job.running) holdScreen();
+  else if (job.paused) drive(job);
+});
+
+export const savedJob = (uid) => loadJobState(uid);
+export const jobLabel = (kind) => KINDS[kind]?.label || 'Job';
+export const jobName = (kind) => KINDS[kind]?.name || 'Job';
+export const discardJob = (uid) => { clearState(uid, 'job'); if (job && !job.running) job = null; tell(); };
+
+// Carry on a saved job (after a reload or a pause); `onChange` redraws the page that started it.
+export function resumeJob(c, onChange, onSelect) {
+  if (job?.running) return jobSheet(c, onSelect);
+  if (job?.paused && job.uid === c.user.uid) { drive(job); return jobSheet(c, onSelect); }
+  const s = savedJob(c.user.uid);
+  if (!s || !KINDS[s.kind]) return;
+  startJob(c, s.kind, null, s, onChange);
+  jobSheet(c, onSelect);
 }
 
 const REFRESH_ROWS = [['added', 'Abstract added', 'good'], ['updated', 'Updated', 'good'], ['unchanged', 'Already up to date', 'plain'],
@@ -221,45 +289,39 @@ const FILL_ROWS = [['lookup', 'Details and abstract from a lookup', 'good'], ['p
   ['partial', 'Details added, no abstract', 'plain'], ['nothing', 'Nothing found', 'warn'], ['noText', 'No PDF text (Reindex first)', 'bad'], ['failed', 'Could not read', 'bad']];
 const REINDEX_ROWS = [['indexed', 'Indexed', 'good'], ['empty', 'No text in the PDF', 'plain'], ['failed', 'Could not read', 'bad']];
 
+// Each step answers one paper with a row key; a dropped connection or a 5xx throws (see httpError) so it is retried.
 // Admin: look the selected papers up again by DOI, PubMed ID or ATOTW number; only bibliographic fields change.
-export function refreshSelected(c, ids, onChange, onSelect) {
-  if (job?.running) return jobSheet(c, onSelect);
-  const lib = current();
-  const withId = ids.filter((id) => refreshId(lib.papers.get(id) || {}));
-  const noId = ids.filter((id) => !withId.includes(id));
-  runJob('refresh', [...withId, ...noId], async (id) => {
-    const snap = await getDoc(doc(c.db, 'papers', id));
-    if (!snap.exists()) return 'notFound';
-    const p = snap.data(), key = refreshId(p);
-    if (!key) return 'noId';
-    const r = await api(c, '/api/lookup?id=' + encodeURIComponent(key));
-    if (!r.ok) return 'notFound';
-    const fresh = await r.json();
-    const ch = refreshChanges(p, fresh);
-    if (Object.keys(ch).length) {
-      await updateDoc(snap.ref, { ...ch, changedAt: serverTimestamp() });
-      restore(id, cleanPaper({ ...p, ...ch }));
-    }
-    if (!p.abstract && ch.abstract) return 'added';
-    if (!p.abstract && !fresh.abstract) return 'noAbstract';
-    return Object.keys(ch).length ? 'updated' : 'unchanged';
-  }, REFRESH_ROWS, () => { dirty(); onChange?.(); });
-  jobSheet(c, onSelect);
-}
+const refreshStep = (c) => async (id) => {
+  const snap = await getDoc(doc(c.db, 'papers', id));
+  if (!snap.exists()) return 'notFound';
+  const p = snap.data(), key = refreshId(p);
+  if (!key) return 'noId';
+  const r = await api(c, '/api/lookup?id=' + encodeURIComponent(key));
+  if (r.status >= 500) throw httpError(r);
+  if (!r.ok) return 'notFound';
+  const fresh = await r.json();
+  const ch = refreshChanges(p, fresh);
+  if (Object.keys(ch).length) {
+    await updateDoc(snap.ref, { ...ch, changedAt: serverTimestamp() });
+    restore(id, cleanPaper({ ...p, ...ch }));
+  }
+  if (!p.abstract && ch.abstract) return 'added';
+  if (!p.abstract && !fresh.abstract) return 'noAbstract';
+  return Object.keys(ch).length ? 'updated' : 'unchanged';
+};
 
 // Admin: for papers with a PDF, the Worker reads the PDF text it already holds for search: an ID printed there is
 // looked up, else the PDF's own abstract/summary is used, else a short AI summary. Only empty fields are filled;
 // anything typed by hand (`manual`) is left alone. Papers with no PDF text are counted, not guessed.
-export function fillSelected(c, ids, onChange, onSelect) {
-  if (job?.running) return jobSheet(c, onSelect);
-  const lib = current();
-  const doiOwner = new Map([...lib.papers].filter(([, p]) => p.doi).map(([id, p]) => [p.doi, id]));
-  runJob('fill', ids, async (id) => {
+const fillStep = (c) => {
+  const doiOwner = new Map([...current().papers].filter(([, p]) => p.doi).map(([id, p]) => [p.doi, id]));
+  return async (id) => {
     const snap = await getDoc(doc(c.db, 'papers', id));
     if (!snap.exists()) return 'failed';
     const p = snap.data();
     if (!p.file) return 'noText';
     const r = await api(c, `/api/enrich/${id}`, { method: 'POST', body: JSON.stringify({ ai: true }), headers: { 'Content-Type': 'application/json' } });
+    if (r.status >= 500) throw httpError(r);
     if (!r.ok) return 'failed';
     const res = await r.json();
     if (!res.hasText) return 'noText';
@@ -269,7 +331,42 @@ export function fillSelected(c, ids, onChange, onSelect) {
     await updateDoc(snap.ref, { ...ch, changedAt: serverTimestamp() });
     restore(id, cleanPaper({ ...p, ...ch }));
     return ch.abstract ? ch.abstractSource : 'partial';
-  }, FILL_ROWS, () => { dirty(); onChange?.(); }, ['nothing', 'noText', 'failed', 'partial'], ['lookup', 'pdf', 'ai', 'nothing', 'noText']);
+  };
+};
+
+// Admin: re-extract the PDFs in the browser and send their text to the search index.
+const reindexStep = (c) => async (id) => {
+  const r = await api(c, `/api/file/${id}`);
+  if (r.status >= 500) throw httpError(r);
+  if (!r.ok) return 'failed';
+  const { extractPages } = await import('./pdf.js');
+  const pages = await extractPages(await r.arrayBuffer());
+  if (!pages.some((t) => t.trim())) return 'empty';
+  const ix = await api(c, `/api/index/${id}`, { method: 'PUT', body: JSON.stringify({ pages }), headers: { 'Content-Type': 'application/json' } });
+  if (ix.status >= 500) throw httpError(ix);
+  if (!ix.ok) return 'failed';
+  markIndexed(id);
+  return 'indexed';
+};
+
+// Fill and Refresh run 3 papers at once (Crossref and PubMed stay under about 3 a second); PDFs one at a time (PDF.js memory).
+const KINDS = {
+  refresh: { label: 'Refreshing', name: 'Refresh abstracts', rows: REFRESH_ROWS, missing: REFRESH_MISSING, always: [], concurrency: 3, dirty: true, step: refreshStep },
+  fill: { label: 'Filling', name: 'Fill missing details', rows: FILL_ROWS, missing: ['nothing', 'noText', 'failed', 'partial'], always: ['lookup', 'pdf', 'ai', 'nothing', 'noText'],
+    concurrency: 3, dirty: true, step: fillStep },
+  reindex: { label: 'Reindexing', name: 'Reindex PDFs', rows: REINDEX_ROWS, missing: REFRESH_MISSING, always: [], concurrency: 1, dirty: false, step: reindexStep },
+};
+
+export function refreshSelected(c, ids, onChange, onSelect) {
+  if (job?.running) return jobSheet(c, onSelect);
+  const withId = ids.filter((id) => refreshId(current().papers.get(id) || {}));
+  startJob(c, 'refresh', [...withId, ...ids.filter((id) => !withId.includes(id))], null, onChange);
+  jobSheet(c, onSelect);
+}
+
+export function fillSelected(c, ids, onChange, onSelect) {
+  if (job?.running) return jobSheet(c, onSelect);
+  startJob(c, 'fill', ids, null, onChange);
   jobSheet(c, onSelect);
 }
 
@@ -284,44 +381,33 @@ export async function indexedIds(c, fresh = false) {
 }
 export const markIndexed = (id) => indexedCache?.add(id);
 
-// Admin: re-extract the selected PDFs in the browser and send their text to the search index.
 export function reindexSelected(c, ids, onChange, onSelect) {
   if (job?.running) return jobSheet(c, onSelect);
   const lib = current();
-  runJob('reindex', ids.filter((id) => lib.papers.get(id)?.file), async (id) => {
-    const r = await api(c, `/api/file/${id}`);
-    if (!r.ok) return 'failed';
-    const { extractPages } = await import('./pdf.js');
-    const pages = await extractPages(await r.arrayBuffer());
-    if (!pages.some((t) => t.trim())) return 'empty';
-    const ix = await api(c, `/api/index/${id}`, { method: 'PUT', body: JSON.stringify({ pages }), headers: { 'Content-Type': 'application/json' } });
-    if (!ix.ok) return 'failed';
-    markIndexed(id);
-    return 'indexed';
-  }, REINDEX_ROWS, onChange);
+  startJob(c, 'reindex', ids.filter((id) => lib.papers.get(id)?.file), null, onChange);
   jobSheet(c, onSelect);
 }
 
 // The progress sheet; Hide leaves the job running (the library page shows a line to reopen it).
 export function jobSheet(c, onSelect) {
   if (!job) return;
-  const title = { refresh: 'Refreshing', fill: 'Filling', reindex: 'Reindexing' }[job.kind];
+  const title = KINDS[job.kind].label;
   const d = sheet(c, `${title} papers`, `<h2 class="sheet-title"></h2><p class="muted" id="jx"></p>
     <div class="progress-row"><strong id="jn"></strong><span class="muted" id="jt"></span></div>
     <div class="bar" role="progressbar" aria-label="Progress" aria-valuemin="0"><div></div></div>
     <ul class="list" id="jr"></ul><p id="jm"></p>
-    <div class="sheet-buttons"><button type="button" id="jstop">Stop</button><button type="button" class="primary" id="jhide">Hide</button></div>`);
+    <div class="sheet-buttons"><button type="button" id="jstop">Cancel</button><button type="button" id="jresume" hidden>Resume</button><button type="button" class="primary" id="jhide">Hide</button></div>`);
   d.querySelector('#jx').textContent = {
-    refresh: 'Looks each one up by DOI, PubMed ID or ATOTW number. Only title, journal, authors and abstract change; tags, notes and PDFs never do. Keeps going if you hide this.',
-    fill: 'Reads the start of each PDF for a DOI, PubMed ID or ATOTW number to look up, else uses its own abstract or summary, else writes a short abstract from the PDF text. Only empty fields are filled; anything edited by hand stays. Keeps going if you hide this.',
-    reindex: 'Reads each PDF again and sends its text to PDF search. Keeps going if you hide this.',
+    refresh: 'Looks each one up by DOI, PubMed ID or ATOTW number. Only title, journal, authors and abstract change; tags, notes and PDFs never do. Keeps going if you hide this, and carries on from where it stopped if the page closes.',
+    fill: 'Reads the start of each PDF for a DOI, PubMed ID or ATOTW number to look up, else uses its own abstract or summary, else writes a short abstract from the PDF text. Only empty fields are filled; anything edited by hand stays. Keeps going if you hide this, and carries on from where it stopped if the page closes.',
+    reindex: 'Reads each PDF again and sends its text to PDF search. Keeps going if you hide this, and carries on from where it stopped if the page closes.',
   }[job.kind];
   const draw = () => {
-    if (!d.isConnected) return off();
-    d.querySelector('.sheet-title').textContent = `${job.running ? title : 'Done:'} ${plural(job.total, 'paper')}`;
+    if (!job || !d.isConnected) return off();
+    d.querySelector('.sheet-title').textContent = `${job.running ? title : job.paused ? 'Paused:' : 'Done:'} ${plural(job.total, 'paper')}`;
     d.querySelector('#jn').textContent = `${job.done} of ${job.total}`;
-    const per = job.done ? (Date.now() - job.started) / job.done : 0;
-    d.querySelector('#jt').textContent = job.running && per ? `about ${Math.max(1, Math.round((per * (job.total - job.done)) / 1000))} s left` : '';
+    const per = job.done > job.done0 ? (Date.now() - job.started) / (job.done - job.done0) : 0;
+    d.querySelector('#jt').textContent = job.running && per ? `about ${Math.max(1, Math.round((per * (job.total - job.done)) / 1000))} s left` : job.paused ? 'Paused: no connection. Your place is saved.' : '';
     const bar = d.querySelector('.bar');
     bar.setAttribute('aria-valuemax', job.total); bar.setAttribute('aria-valuenow', job.done);
     bar.firstChild.style.width = `${job.total ? (100 * job.done) / job.total : 100}%`;
@@ -333,12 +419,14 @@ export function jobSheet(c, onSelect) {
       b.onclick = () => { d.close(); onSelect(job.missing); };
       m.append(b);
     }
-    d.querySelector('#jstop').hidden = !job.running;
-    d.querySelector('#jhide').textContent = job.running ? 'Hide' : 'Close';
+    d.querySelector('#jstop').hidden = !job.running && !job.paused;
+    d.querySelector('#jresume').hidden = !job.paused;
+    d.querySelector('#jhide').textContent = job.running || job.paused ? 'Hide' : 'Close';
   };
   const off = onJob(draw);
   d.addEventListener('close', () => off());
-  d.querySelector('#jstop').onclick = () => { job.stop = true; };
+  d.querySelector('#jstop').onclick = () => { if (job.running) job.stop = true; else { discardJob(job.uid); d.close(); } };
+  d.querySelector('#jresume').onclick = () => drive(job);
   d.querySelector('#jhide').onclick = () => d.close();
   draw();
 }

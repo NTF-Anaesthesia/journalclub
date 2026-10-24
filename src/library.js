@@ -15,7 +15,8 @@ import { refreshId } from './refresh.js';
 import { loadLibrary as loadCatalogue, current, dirty as markDirty, forget, readHead, writeHead, readSync, timing, withTimeout, headCatalogue } from './catalogue.js';
 import { SORTS, sortLabel, discussedAt, CHIPS, emptyFilter, filterOn, matches, chipCounts, tagCounts, sortEntries, selectAll, SELECT_CAP } from './filters.js';
 import { loadStarred, setStarred, loadRecent, touchRecent, loadLists, loadSearches, setSearchSaved, loadNoted, setNoted, scanNoted } from './prefs.js';
-import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
+import { sheet, snack, addToSheet, starSelected, refreshSelected, fillSelected, reindexSelected, removeSelected, moreSheet, jobSheet, job, onJob, savedJob, resumeJob, discardJob, jobName, jobLabel, indexedIds, markIndexed, renderDuplicates } from './bulk.js';
+import { saveState, loadState, clearState, retrying, httpError } from './jobstate.js';
 import { renderSaved, renderList } from './saved.js';
 import { isOffline, forget as forgetOffline, syncStarred } from './offline.js';
 
@@ -176,6 +177,7 @@ async function renderSearch() {
       <span><button type="button" id="sall" class="link"></button><button type="button" id="snone" class="link">None</button></span></div>
     <p id="selnote" class="muted" hidden></p>
     <p id="jobline" class="muted" hidden></p>
+    <p id="resumebar" class="resume" hidden></p>
     <div id="sgroup" class="sgroup" hidden></div>
     <ul id="res" class="list"></ul><p id="end" class="muted end"></p>
     <nav id="selbar" class="selbar" aria-label="Actions on selected papers" hidden></nav></section>`);
@@ -505,14 +507,26 @@ async function renderSearch() {
 
   // ---- A refresh or reindex still running (or just finished) ----
   const jobline = $in(page, '#jobline');
+  const resumebar = $in(page, '#resumebar');
   const drawJob = () => {
     if (!page.isConnected) return offJob();
     jobline.hidden = !job;
-    if (!job) return;
-    jobline.replaceChildren(c.el(`<span>${job.kind === 'refresh' ? 'Refreshing' : 'Reindexing'} ${job.running ? `${job.done} of ${job.total}` : `done (${job.total})`} · </span>`));
-    const b = c.el('<button type="button" class="link">Show</button>');
-    b.onclick = () => jobSheet(c, (ids) => startSelect(ids));
-    jobline.append(b);
+    if (job) {
+      jobline.replaceChildren(c.el(`<span>${jobLabel(job.kind)} ${job.running ? `${job.done} of ${job.total}` : job.paused ? `paused: no connection (${job.done} of ${job.total})` : `done (${job.total})`} · </span>`));
+      const b = c.el('<button type="button" class="link">Show</button>');
+      b.onclick = () => jobSheet(c, (ids) => startSelect(ids));
+      jobline.append(b);
+    }
+    const saved = !job?.running && savedJob(c.user.uid);
+    resumebar.hidden = !saved;
+    if (!saved) return;
+    const name = jobName(saved.kind);
+    resumebar.replaceChildren(c.el(`<span>${c.esc(name)} paused: ${saved.ids.length} of ${saved.total} left · </span>`));
+    const go = c.el('<button type="button" class="link">Resume</button>');
+    go.onclick = () => resumeJob(c, () => { if (page.isConnected) { drawChips(); show(); } }, (ids) => startSelect(ids));
+    const no = c.el('<button type="button" class="link">Discard</button>');
+    no.onclick = () => discardJob(c.user.uid);
+    resumebar.append(go, document.createTextNode(' · '), no);
   };
   const offJob = onJob(drawJob);
   drawJob();
@@ -1015,29 +1029,55 @@ async function renderRemove(id) {
   };
 }
 
-// Admin, once after the move to server search: copies the old texts/<paper> pages into the Worker's index
-// and indexes every paper's notes. Safe to run again.
+// Admin: indexes every paper's shared notes for search, 25 papers per call. The cursor and running total are kept on
+// this device after every call, so a dropped connection or a closed tab carries on from there. Safe to run again.
+// (Old cursors in a "texts" phase are ignored: PDF text is rebuilt with Reindex PDFs in select mode.)
 async function renderReindex() {
   const page = c.el(`<section class="card"><p><a href="#/library">← Library</a></p><h1>Rebuild PDF search</h1>
-    <p class="muted">Copies stored PDF text and notes into the search index. Safe to run more than once.</p>
-    <button id="go" class="primary">Rebuild</button><p id="rmsg" class="muted"></p></section>`);
+    <p class="muted">Re-indexes members' shared notes. For PDF text use Reindex PDFs in select mode. Safe to run more than once.</p>
+    <p id="rsaved" class="resume" hidden></p>
+    <button id="go" class="primary">Rebuild</button><p id="rmsg" class="muted" aria-live="polite"></p></section>`);
   c.view.replaceChildren(page);
-  const msg = $in(page, '#rmsg'), go = $in(page, '#go');
+  const msg = $in(page, '#rmsg'), go = $in(page, '#go'), saved = $in(page, '#rsaved');
   if (c.member.role !== 'admin') { go.remove(); msg.textContent = 'Admins only.'; return; }
-  go.onclick = async () => {
-    go.disabled = true;
-    let body = {}, done = { texts: 0, notes: 0 };
+  const uid = c.user.uid;
+  const drawSaved = () => {
+    const s = loadState(uid, 'rebuild');
+    saved.hidden = !s || !s.next;
+    go.textContent = s?.next ? 'Start again from the beginning' : 'Rebuild';
+    if (saved.hidden) return;
+    saved.replaceChildren(c.el(`<span>Rebuild paused: ${s.notes || 0} papers' notes done so far · </span>`));
+    const r = c.el('<button type="button" class="link">Resume</button>');
+    r.onclick = () => run(s);
+    const d = c.el('<button type="button" class="link">Discard</button>');
+    d.onclick = () => { clearState(uid, 'rebuild'); msg.textContent = ''; drawSaved(); };
+    saved.append(r, document.createTextNode(' · '), d);
+  };
+  const run = async (from) => {
+    go.disabled = true; saved.hidden = true;
+    let body = from?.next || {}, notes = from?.notes || 0;
+    const wake = await navigator.wakeLock?.request('screen').catch(() => null);
     try {
       while (body) {
-        const r = await apiFetch('/api/backfill', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
-        const out = await r.json();
-        if (!r.ok) throw new Error(out.error || r.status);
-        done[out.phase] += out.indexed;
-        msg.textContent = `Working… ${done.texts} PDFs and ${done.notes} papers' notes so far.`;
+        const out = await retrying(async () => {
+          const r = await apiFetch('/api/backfill', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+          if (r.status >= 500) throw httpError(r);
+          const o = await r.json();
+          if (!r.ok) throw new Error(o.error || r.status);
+          return o;
+        });
+        notes += out.indexed;
         body = out.next;
+        if (body) saveState(uid, 'rebuild', { next: body, notes });
+        msg.textContent = `Working… ${notes} papers' notes so far.`;
       }
-      msg.textContent = `Done: ${done.texts} PDFs and ${done.notes} papers' notes indexed.`;
-    } catch (e) { msg.textContent = `Stopped: ${e.message}. Run it again to carry on.`; }
+      clearState(uid, 'rebuild');
+      msg.textContent = `Done: ${notes} papers' notes indexed.`;
+    } catch (e) { msg.textContent = `Stopped: ${e.message}. Your place is saved; tap Resume to carry on.`; }
+    wake?.release?.().catch(() => {});
     go.disabled = false;
+    drawSaved();
   };
+  go.onclick = () => { clearState(uid, 'rebuild'); run(null); };
+  drawSaved();
 }
