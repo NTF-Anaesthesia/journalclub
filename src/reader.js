@@ -4,9 +4,9 @@
 // network loader always opens with a small Range request, so only the chunks the first page needs are downloaded.
 import './polyfills.js';
 import { getDocument, GlobalWorkerOptions, Util } from 'pdfjs-dist';
-import { doc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
 import { getCached, keep, touch, prune, isOffline } from './offline.js';
-import { loadStarred } from './prefs.js';
+import { doc, getDoc, getDocs, collection, query, where, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { loadStarred, setNoted } from './prefs.js';
 
 GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 const ZOOM_MIN = 0.5, ZOOM_MAX = 4;
@@ -46,31 +46,51 @@ export function readerSource(r) {
 export async function renderReader(r, c, apiFetch) {
   const src = readerSource(r);
   const id = src.id;
-  const words = termWords(r.q);
+  let words = termWords(r.q);
   const page = c.el(`<section class="card reader">
-    <div class="reader-bar">
-      <a href="${c.esc(src.back)}" id="rback">← ${src.backText}</a>
-      <a href="#/paper/${c.esc(id)}" id="rsess" hidden>Session</a>
-      <span class="badge" id="roff" hidden>Offline copy</span>
-      <span class="reader-share" id="rshare" hidden><button type="button" id="rdl">Download</button><button type="button" id="rsend">Send</button></span>
+    <div class="reader-head">
+      <div class="reader-tools">
+        <a href="${c.esc(src.back)}" id="rback" class="rbtn" aria-label="${src.backText}" title="${src.backText}">←</a>
+        <h1 class="reader-title" id="rtitle">PDF</h1>
+        <label class="reader-jump"><span class="sr-only">Page number</span><input id="pg" type="number" inputmode="numeric" min="1" value="1" aria-label="Page number"><span class="muted">/<span id="pn">…</span></span></label>
+        <button type="button" class="rbtn" id="rfind" aria-label="Search in file" aria-expanded="false">🔍</button>
+        <button type="button" class="rbtn" id="rnotes" aria-label="Notes" aria-expanded="false" hidden>📝</button>
+        <button type="button" class="rbtn" id="zo" aria-label="Zoom out">−</button><button type="button" class="rbtn" id="zi" aria-label="Zoom in">+</button>
+        <button type="button" class="rbtn" id="rmore" aria-label="More" aria-expanded="false">⋯</button>
+      </div>
+      <form class="reader-find" id="rfindbar" hidden>
+        <input id="rq" type="search" autocomplete="off" aria-label="Find in this file" placeholder="Find in this file" value="${c.esc(r.q || '')}">
+        <span class="muted" id="rcount" aria-live="polite"></span>
+        <button type="button" class="rbtn" id="rprev" aria-label="Previous match">↑</button><button type="submit" class="rbtn" id="rnext" aria-label="Next match">↓</button>
+      </form>
+      <div class="reader-more" id="rmorebar" hidden>
+        <a href="#/paper/${c.esc(id)}" id="rsess" hidden>Session</a>
+        <span class="badge" id="roff" hidden>Offline copy</span>
+        <span class="reader-share" id="rshare" hidden><button type="button" id="rdl">Download</button><button type="button" id="rsend">Send</button></span>
+      </div>
     </div>
-    <h1 class="reader-title" id="rtitle">PDF</h1>
-    <div class="reader-tools">
-      <label class="reader-jump">Page <input id="pg" type="number" inputmode="numeric" min="1" value="1" aria-label="Page number"> <span class="muted">of <span id="pn">…</span></span></label>
-      <button type="button" id="zo" aria-label="Zoom out">−</button><button type="button" id="zi" aria-label="Zoom in">+</button>
-    </div>
-    <p id="rmsg" class="muted">Opening…</p><div id="pages" class="reader-pages"></div></section>`);
+    <p id="rmsg" class="muted">Opening…</p><div id="pages" class="reader-pages"></div>
+    <div class="reader-notes" id="rnotesbox" hidden>
+      <div class="reader-notes-head"><strong id="rnotestitle">My notes</strong><span class="muted" id="rvis"></span><span class="muted" id="rsaved" aria-live="polite"></span>
+        <button type="button" id="rpagetag">Insert p. <span id="rpn">1</span></button></div>
+      <textarea id="rnote" rows="5" maxlength="4000" aria-label="My notes" placeholder="Your notes"></textarea>
+    </div></section>`);
   c.view.replaceChildren(page);
   const $ = (s) => page.querySelector(s);
   const say = (t) => { $('#rmsg').textContent = t; $('#rmsg').hidden = !t; };
+  const toggle = (btn, box, on = box.hidden) => { box.hidden = !on; btn.setAttribute('aria-expanded', String(on)); return on; };
+  $('#rmore').onclick = () => toggle($('#rmore'), $('#rmorebar'));
 
-  // Paper title and its latest session (both optional: the reader still works without them).
-  let title = src.what;
-  getDoc(doc(c.db, ...src.doc)).then((s) => {
+  // Paper title and its latest session (both optional: the reader still works without them). `meta` is the paper's or
+  // session's own document, which a session note copies its title and date from.
+  let title = src.what, meta = null;
+  const metaReady = getDoc(doc(c.db, ...src.doc)).then((s) => {
     if (!s.exists()) return;
-    const t = s.data().title || (s.data().paperTitle ? `Slides: ${s.data().paperTitle}` : '');
+    meta = s.data();
+    const t = meta.title || (meta.paperTitle ? `Slides: ${meta.paperTitle}` : '');
     title = t || title;
     $('#rtitle').textContent = t || 'PDF';
+    $('#rtitle').title = t || '';
     document.title = `${t || 'PDF'} · Reader · Journal club`;
   }).catch(() => {});
   if (src.what === 'paper') getDocs(query(collection(c.db, 'sessions'), where('paperId', '==', id))).then((ss) => {
@@ -181,22 +201,29 @@ export async function renderReader(r, c, apiFetch) {
     finally { if (d.dataset.busy === String(s)) delete d.dataset.busy; }
   }
 
-  // Marks each occurrence of the search words with a box placed over the page text.
-  async function highlight(p, vp, d) {
-    const content = await p.getTextContent();
+  // The text of each page, read once; every occurrence of the search words on it, in reading order.
+  const texts = new Map();
+  const textOf = (p, n) => { if (!texts.has(n)) texts.set(n, p.getTextContent()); return texts.get(n); };
+  const hitsIn = (content, ws) => {
+    const out = [];
     for (const it of content.items) {
       const low = (it.str || '').toLowerCase();
       if (!low || !it.width) continue;
+      for (const word of ws) for (let at = low.indexOf(word); at >= 0; at = low.indexOf(word, at + word.length)) out.push({ it, at, word, low });
+    }
+    return out;
+  };
+
+  // Marks each occurrence of the search words with a box placed over the page text.
+  async function highlight(p, vp, d) {
+    const hits = hitsIn(await textOf(p, Number(d.dataset.n)), words);
+    for (const { it, at, word, low } of hits) {
       const tx = Util.transform(vp.transform, it.transform);
       const h = Math.hypot(tx[2], tx[3]), w = it.width * vp.scale;
-      for (const word of words) {
-        for (let at = low.indexOf(word); at >= 0; at = low.indexOf(word, at + word.length)) {
-          const m = document.createElement('mark');
-          m.className = 'pdf-hl';
-          m.style.cssText = `left:${tx[4] + (at / low.length) * w}px;top:${tx[5] - h}px;width:${(word.length / low.length) * w}px;height:${h}px`;
-          d.append(m);
-        }
-      }
+      const m = document.createElement('mark');
+      m.className = 'pdf-hl';
+      m.style.cssText = `left:${tx[4] + (at / low.length) * w}px;top:${tx[5] - h}px;width:${(word.length / low.length) * w}px;height:${h}px`;
+      d.append(m);
     }
   }
 
@@ -210,7 +237,7 @@ export async function renderReader(r, c, apiFetch) {
   pgs.forEach((d) => io.observe(d));
   layout();
 
-  const topOffset = () => ($('.reader-tools').getBoundingClientRect().bottom || 0);
+  const topOffset = () => ($('.reader-head').getBoundingClientRect().bottom || 0);
   const goto = (n, smooth = false) => {
     const d = pgs[Math.min(total, Math.max(1, n)) - 1];
     window.scrollTo({ top: d.getBoundingClientRect().top + scrollY - topOffset() - 4, behavior: smooth ? 'smooth' : 'auto' });
@@ -243,6 +270,12 @@ export async function renderReader(r, c, apiFetch) {
   addEventListener('scroll', onScroll, { passive: true });
 
   // Zoom: buttons, ctrl+wheel and a two-finger pinch. Pages are re-laid out and re-drawn at the new size.
+  const redraw = () => {
+    token++;
+    pgs.forEach((d) => { d.replaceChildren(); delete d.dataset.done; delete d.dataset.busy; });
+    layout();
+    pgs.forEach((d) => { const r2 = d.getBoundingClientRect(); if (r2.bottom > -1500 && r2.top < innerHeight + 1500) paint(Number(d.dataset.n)); });
+  };
   const setZoom = (z) => {
     const was = current();
     zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
@@ -273,6 +306,103 @@ export async function renderReader(r, c, apiFetch) {
     if (Math.abs(ratio - 1) > 0.05) setZoom(zoom * ratio);
   });
   holder.addEventListener('wheel', (e) => { if (e.ctrlKey) { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); } }, { passive: false });
+
+  // Search in the file: the box holds the Library search term when I arrive from one; editing it re-marks the pages,
+  // clearing it turns the marks off. Matches are counted page by page in the background; next/previous walk them.
+  const bar = $('#rfindbar'), box = $('#rq');
+  let hits = [], at = -1, scanId = 0, findT = 0;
+  const count = () => { $('#rcount').textContent = !words.length ? '' : hits.length ? `${at >= 0 ? at + 1 : '–'} of ${hits.length}` : (scanId ? 'No match' : ''); };
+  async function scan() {
+    const mine = ++scanId; hits = []; at = -1; count();
+    if (!words.length) return;
+    const ws = words;
+    for (let n = 1; n <= total; n++) {
+      const k = hitsIn(await textOf(n === 1 ? first : await pdf.getPage(n), n), ws).length;
+      if (mine !== scanId || !page.isConnected) return;
+      for (let i = 0; i < k; i++) hits.push({ n, i });
+      count();
+    }
+    if (!hits.length) $('#rcount').textContent = 'No match';
+  }
+  const setWords = () => {
+    words = termWords(box.value);
+    page.dataset.find = words.join(' ');
+    redraw(); scan();
+  };
+  async function step(dir) {
+    if (!hits.length) return;
+    at = (at + dir + hits.length) % hits.length;
+    const { n, i } = hits[at];
+    count();
+    pinUntil = Date.now() + 900;
+    goto(n);
+    await paint(n);
+    pgs.forEach((d) => d.querySelectorAll('.pdf-hl.cur').forEach((m) => m.classList.remove('cur')));
+    const m = pgs[n - 1].querySelectorAll('.pdf-hl')[i];
+    if (m) { m.classList.add('cur'); m.scrollIntoView({ block: 'center' }); }
+    last = n; input.value = String(n);
+  }
+  box.oninput = () => { clearTimeout(findT); findT = setTimeout(setWords, 300); };
+  bar.onsubmit = (e) => { e.preventDefault(); clearTimeout(findT); if (termWords(box.value).join(' ') !== words.join(' ')) { setWords(); return; } step(1); };
+  $('#rprev').onclick = () => step(-1);
+  $('#rfind').onclick = () => { if (toggle($('#rfind'), bar)) box.focus(); };
+  if (words.length) { toggle($('#rfind'), bar, true); scan(); }
+
+  // Notes drawer: my paper note (papers/<id>/notes/<uid>, keeping the visibility it already has; a new note is Only me),
+  // or my private session note (users/<uid>/sessionNotes/<sid>). Slides of a deck have no drawer.
+  if (src.what === 'paper' || src.id.startsWith('sess_')) {
+    const sid = src.id.replace(/^sess_/, '');
+    const isPaper = src.what === 'paper';
+    const ref = isPaper ? doc(c.db, 'papers', id, 'notes', c.user.uid) : doc(c.db, 'users', c.user.uid, 'sessionNotes', sid);
+    const ta = $('#rnote'), saved = $('#rsaved'), tag = $('#rpagetag');
+    $('#rnotestitle').textContent = isPaper ? 'My paper note' : 'My session notes';
+    let shared = false, exists = false, loaded = false, pending = false, timer = 0;
+    $('#rnotes').hidden = false;
+    const showVis = () => { $('#rvis').textContent = isPaper ? (shared ? '· Members' : '· Only me') : '· Only me'; };
+    showVis();
+    const ready = Promise.all([getDoc(ref).catch(() => null), metaReady]).then(([d]) => {
+      if (d?.exists()) { exists = true; shared = d.data().shared === true; ta.value = String(d.data().text || ''); showVis(); }
+      loaded = true;
+    });
+    const save = async () => {
+      clearTimeout(timer);
+      if (!pending || !loaded) return;
+      pending = false;
+      const text = ta.value.trim();
+      try {
+        if (!text) {
+          if (exists) { await deleteDoc(ref); exists = false; if (isPaper) await setNoted(c.db, c.user.uid, id, null); }
+        } else if (isPaper) {
+          await setDoc(ref, { text, rating: 0, name: c.member.name || c.user.displayName || c.user.email, shared, updatedAt: serverTimestamp() });
+          exists = true; await setNoted(c.db, c.user.uid, id, Date.now());
+        } else {
+          await setDoc(ref, { text, paperId: meta?.paperId || '', paperTitle: String(meta?.paperTitle || '').slice(0, 400), date: meta?.date || null, updatedAt: serverTimestamp() });
+          exists = true;
+        }
+        if (isPaper) apiFetch(`/api/index/${id}/notes`, { method: 'POST' }).catch(() => {}); // shared notes are searched server-side
+        saved.textContent = text ? 'Saved ✓' : '';
+      } catch (e) { console.error(e); pending = true; saved.textContent = 'Could not save. Your note is still here.'; }
+    };
+    ta.oninput = () => { pending = true; saved.textContent = ''; clearTimeout(timer); timer = setTimeout(save, 800); };
+    ta.onblur = save;
+    addEventListener('pagehide', save, { once: true });
+    addEventListener('hashchange', save, { once: true });
+    const curPage = () => Math.min(total, Math.max(1, Number(input.value) || 1)); // the page the header shows
+    const pageTag = () => { $('#rpn').textContent = String(curPage()); };
+    tag.onmousedown = (e) => e.preventDefault(); // keep the cursor in the note
+    tag.onclick = () => {
+      const t = `p. ${curPage()} `, a = ta.selectionStart ?? ta.value.length, z = ta.selectionEnd ?? a;
+      ta.setRangeText(t, a, z, 'end');
+      ta.dispatchEvent(new Event('input')); ta.focus();
+    };
+    $('#rnotes').onclick = async () => {
+      const on = toggle($('#rnotes'), $('#rnotesbox'));
+      page.classList.toggle('notes-open', on);
+      if (on) { pageTag(); await ready; if (!ta.matches(':focus')) ta.focus(); }
+    };
+    input.addEventListener('change', pageTag);
+    const watch = setInterval(() => { if (!page.isConnected) clearInterval(watch); else if (!$('#rnotesbox').hidden) pageTag(); }, 400);
+  }
 
   // Open where the search hit is (else where this member stopped last time).
   const start = Math.min(total, Math.max(1, Number(r.arg2) || lastPage(c.user.uid, id) || 1));
