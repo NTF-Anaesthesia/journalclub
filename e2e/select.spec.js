@@ -29,7 +29,7 @@ function makePdf(text) {
 }
 
 async function signIn(page, email, role = 'member') {
-  await page.goto(`/?emulator=${PROJECT}`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   const uid = await page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
   const r = await page.request.patch(`${DOCS}/members/${uid}`, { headers: owner, data: { fields: {
     email: s(email), name: s(email.split('@')[0]), role: s(role), inviteId: s('seed') } } });
@@ -39,7 +39,7 @@ async function signIn(page, email, role = 'member') {
 const seed = (page, id, fields) => page.request.patch(`${DOCS}/papers/${id}`, { headers: owner, data: { fields: {
   doi: s(''), pmid: s(''), abstract: s(''), authors: arr(['Ann Author']), journal: s('Anaesthesia'), tags: arr([]), ...fields } } })
   .then((r) => expect(r.ok()).toBeTruthy());
-const open = async (page, hash = '') => { await page.goto(`/?emulator=${PROJECT}#/${hash}`); await page.reload(); };
+const open = async (page, hash = 'library') => { await page.goto(`/?emulator=${PROJECT}#/${hash}`); await page.reload(); };
 const noSideScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 async function longPress(page, locator) {
   const b = await locator.boundingBox();
@@ -129,7 +129,7 @@ test('member: sort by year, star on one device and see it in Saved on another, f
   const ctxB = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const b = await ctxB.newPage();
   await workerApi(b, PROJECT);
-  await b.goto(`/?emulator=${PROJECT}`);
+  await b.goto(`/?emulator=${PROJECT}#/library`);
   await b.evaluate(async () => { await window.__jc.signIn('res.sel@example.org'); });
   await open(b, 'lists');
   await expect(b.getByRole('link', { name: /Starred\s+· 1 paper/ })).toBeVisible();

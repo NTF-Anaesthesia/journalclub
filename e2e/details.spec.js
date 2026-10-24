@@ -20,7 +20,7 @@ const JOURNAL = 'PLoS Medicine Essay Why Most Published Research Findings Are Fa
 const HANDOUT = 'Ward round handout. Who sees which bed, when the registrar joins, how handover is written and who is told. '.repeat(8);
 
 async function signIn(page, email, role = 'member') {
-  await page.goto(`/?emulator=${PROJECT}`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   const uid = await page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
   const r = await page.request.patch(`${DOCS}/members/${uid}`, { headers: owner, data: { fields: {
     email: s(email), name: s(email.split('@')[0]), role: s(role), inviteId: s('seed') } } });
@@ -30,7 +30,7 @@ async function signIn(page, email, role = 'member') {
 const seed = (page, id, fields) => page.request.patch(`${DOCS}/papers/${id}`, { headers: owner, data: { fields: {
   doi: s(''), pmid: s(''), abstract: s(''), authors: arr([]), journal: s(''), tags: arr([]), file: FILE, ...fields } } })
   .then((r) => expect(r.ok()).toBeTruthy());
-const open = async (page, hash = '') => { await page.goto(`/?emulator=${PROJECT}#/${hash}`); await page.reload(); };
+const open = async (page, hash = 'library') => { await page.goto(`/?emulator=${PROJECT}#/${hash}`); await page.reload(); };
 async function longPress(page, locator) {
   const b = await locator.boundingBox();
   await page.mouse.move(b.x + 40, b.y + b.height / 2);

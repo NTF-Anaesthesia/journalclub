@@ -4,7 +4,7 @@ test.use({ viewport: { width: 390, height: 844 } });
 
 test('stranger sees the sign-in page and no member content', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Journal Club' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Join the club' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
   await expect(page.getByText('Admin')).toHaveCount(0);
   await page.goto('/#/admin');
@@ -45,7 +45,8 @@ test('admin invites, a newcomer joins once, the link then dies', async ({ page, 
   await p2.reload();
   await expect(p2.getByText('Join as new@example.org?')).toBeVisible();
   await p2.getByRole('button', { name: 'Accept invite' }).click();
-  await expect(p2.getByLabel('Search the library')).toBeVisible();
+  await expect(p2.getByRole('heading', { name: 'Club', exact: true })).toBeVisible();
+  await expect(p2.locator('#tabs .app-tab')).toHaveText(['Club', 'Calendar', 'Library', 'Saved', 'Settings']);
   await expect(p2.getByText('Admin', { exact: true })).toHaveCount(0);
 
   const ctx3 = await browser.newContext();

@@ -8,7 +8,7 @@ import {
   doc, getDoc, getDocs, collection, setDoc, deleteDoc, updateDoc, writeBatch, serverTimestamp, Timestamp, query, orderBy,
 } from 'firebase/firestore';
 import { firebaseConfig } from './config.js';
-import { renderLibraryRoute, LIBRARY_ROUTES } from './library.js';
+import { renderLibraryRoute, LIBRARY_ROUTES, showAuthors, setShowAuthors } from './library.js';
 import { timing, withTimeout, diagnostics } from './catalogue.js';
 import { refresh as refreshOffline, clearAll as clearOffline, usage as offlineUsage, sizeText } from './offline.js';
 import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
@@ -81,32 +81,39 @@ async function loadMember() {
 function route() {
   const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
   const [name, arg, arg2] = path.split('/');
-  return { name: name || 'library', arg, arg2, q: new URLSearchParams(qs || '').get('q') || '' };
+  return { name: name || 'home', arg, arg2, q: new URLSearchParams(qs || '').get('q') || '' };
 }
 
+// Pages load before they show: one whose route was left meanwhile must not replace the newer page.
+let renders = 0;
 function render() {
+  const mine = ++renders;
   if (!ready) { view.replaceChildren(el('<p class="muted">Loading…</p>')); return; }
   renderBar();
   const r = route();
   if (r.name === 'join' && r.arg) return renderJoin(r.arg);
   if (!user) return renderSignedOut();
-  if (r.name === 'me') return renderMe();
+  if (r.name === 'me' || r.name === 'settings') return renderMe();
   if (!member) return renderNotMember();
   if (r.name === 'admin') return member.role === 'admin' ? renderAdmin() : renderDenied();
-  const ctx = { db, user, member, view, el, esc };
+  const ctx = { db, user, member, view: { replaceChildren: (...n) => { if (mine === renders) view.replaceChildren(...n); } }, el, esc };
   if (LIBRARY_ROUTES.includes(r.name)) return renderLibraryRoute(r, ctx);
   if (CLUB_ROUTES.includes(r.name)) return renderClubRoute(r, ctx);
-  return renderLibraryRoute({ name: 'library' }, ctx);
+  return renderClubRoute({ name: 'home' }, ctx);
 }
 
-// Bottom tab bar (members only; Club, Library, Saved; search is the default page, club home is #/home, also #/sessions) and the top bar: its title fades in once the page's large title scrolls away.
+// Bottom tab bar (members only; Club, Calendar, Library, Saved, Settings; club home is the default page, also #/home and
+// #/sessions; Settings is also #/me) and the top bar: its title fades in once the page's large title scrolls away.
 const TABS = [
-  ['home', 'Club', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c.8-3.6 3.2-5.5 6-5.5s5.2 1.9 6 5.5"/><circle cx="16.5" cy="9" r="2.6"/><path d="M16 14.6c2.6 0 4.4 1.7 5 5.4"/>'],
-  ['', 'Library', '<path d="M5 4h3v16H5zM10 4h3v16h-3z"/><path d="m15.5 4.8 2.9-.8 3.6 15.4-2.9.8z"/>'],
+  ['', 'Club', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c.8-3.6 3.2-5.5 6-5.5s5.2 1.9 6 5.5"/><circle cx="16.5" cy="9" r="2.6"/><path d="M16 14.6c2.6 0 4.4 1.7 5 5.4"/>'],
+  ['calendar', 'Calendar', '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'],
+  ['library', 'Library', '<path d="M5 4h3v16H5zM10 4h3v16h-3z"/><path d="m15.5 4.8 2.9-.8 3.6 15.4-2.9.8z"/>'],
   ['lists', 'Saved', '<path d="M6 4h12v16l-6-4-6 4z"/>'],
+  ['settings', 'Settings', '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'],
 ];
-const TAB_OF = { '': '', library: '', add: '', import: '', paper: '', read: '', remove: '', reindex: '', duplicates: '', lists: 'lists', list: 'lists',
-  home: 'home', sessions: 'home', session: 'home', point: 'home', plan: 'home' };
+const TAB_OF = { library: 'library', add: 'library', import: 'library', paper: 'library', read: 'library', remove: 'library', reindex: 'library',
+  duplicates: 'library', lists: 'lists', list: 'lists', home: '', sessions: '', session: '', point: '', plan: '', calendar: 'calendar',
+  settings: 'settings', me: 'settings', admin: 'settings' };
 const PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
 
 function renderBar() {
@@ -114,8 +121,8 @@ function renderBar() {
   const on = !!(user && member);
   tabbar.hidden = !on;
   document.body.classList.toggle('app-has-tabbar', on);
-  if (!user) { bar.replaceChildren(); return; }
-  bar.replaceChildren(el(`<a class="app-bar-btn" href="#/me" aria-label="Account">${PERSON}</a>`));
+  // Members reach their account from the Settings tab; signed-in non-members keep the button to sign out.
+  if (!user || on) bar.replaceChildren(); else bar.replaceChildren(el(`<a class="app-bar-btn" href="#/me" aria-label="Account">${PERSON}</a>`));
   if (!on) return;
   const cur = TAB_OF[route().name] ?? null;
   $('#tabs').innerHTML = TABS.map(([k, t, icon]) => `<a class="app-tab" href="#/${k}"${k === cur ? ' aria-current="page"' : ''}>
@@ -139,15 +146,19 @@ new MutationObserver(() => { const h = view.querySelector('h1'); if (h !== lastH
 
 async function renderMe() {
   const admin = member?.role === 'admin';
-  const page = el(`<section class="card"><h1>Account</h1>
+  const page = el(`<section class="card"><h1>Settings</h1>
+    <h2>Account</h2>
     <ul class="list"><li><span>${esc(member?.name || user.displayName || '')}<br><span class="muted">${esc(user.email)}</span></span>
       ${member ? `<span class="muted">${esc(member.role)}</span>` : ''}</li></ul>
     ${admin ? '<h2>Journal club</h2><ul class="list nav-list"><li><a href="#/admin">Admin</a></li></ul>' : ''}
+    ${member ? `<h2>Preferences</h2><ul class="list"><li><label class="check-row"><input type="checkbox" id="sauth"${showAuthors() ? ' checked' : ''}><span class="grow">Show authors in the library</span></label></li></ul>` : ''}
     <h2>Offline papers</h2><p class="muted" id="offinfo">Counting…</p>
     <p><button id="offclear" type="button">Clear offline papers</button></p>
     <h2>Trouble loading?</h2><p class="muted">If the library hangs or is slow, copy this and send it to the admin.</p>
     <p><button id="diag" type="button">Copy diagnostics</button> <span class="muted" id="diagmsg" role="status"></span></p>
     <p><button id="out" class="danger-btn">Sign out</button></p></section>`);
+  const sa = page.querySelector('#sauth');
+  if (sa) sa.onchange = () => setShowAuthors(sa.checked);
   page.querySelector('#out').onclick = async () => { await clearOffline().catch(() => {}); signOut(auth); };
   page.querySelector('#diag').onclick = async () => {
     const text = diagnostics(), msg = page.querySelector('#diagmsg');
@@ -171,10 +182,17 @@ function signInButton() {
 }
 
 function renderSignedOut() {
-  const card = el(`<section class="card"><h1>Journal Club</h1>
-    <p>A members-only library and journal club for the department. Access is by invitation.</p>
-    <p class="muted">Have an invite link? Open it, then sign in.</p></section>`);
-  card.append(signInButton());
+  const card = el(`<section class="card welcome"><img class="welcome-mark" src="icons/icon.svg" alt="" width="72" height="72">
+    <p class="eyebrow">NTF Anaesthesia</p><h1>Join the club</h1>
+    <p class="welcome-lead">Read, present and talk through the papers that shape our practice, together.</p>
+    <ul class="welcome-points">
+      <li><strong>Club</strong><span>The next session, who presents, and your take-home point.</span></li>
+      <li><strong>Library</strong><span>Every paper and slide deck we have read, searchable down to the page.</span></li>
+      <li><strong>Saved</strong><span>Your starred papers and reading lists, also offline.</span></li>
+    </ul>
+    <p class="actions" id="signin"></p>
+    <p class="muted">Members only. Got an invite link? Open it, then sign in with Google.</p></section>`);
+  card.querySelector('#signin').append(signInButton());
   view.replaceChildren(card);
 }
 
@@ -254,7 +272,7 @@ async function renderAdmin() {
     <h2>Discussion form</h2><p class="muted">Applies to all future sessions. A session can override it on its own page.</p>
     <div id="dform"></div></section>`);
   view.replaceChildren(page);
-  const ctx = { db, user, member, view, el, esc };
+  const ctx = { db, user, member, view: { replaceChildren: (...n) => { if (mine === renders) view.replaceChildren(...n); } }, el, esc };
   Promise.all([loadClub(ctx), loadTemplate(ctx)]).then(([club, fields]) => {
     page.querySelector('#cteams').value = club.teamsUrl || '';
     page.querySelector('#ctime').value = club.time || '';
@@ -361,5 +379,15 @@ onAuthStateChanged(auth, async (u) => {
   render();
 });
 getRedirectResult(auth).catch((e) => alert('Sign-in failed: ' + e.code));
+// A tap anywhere on a list card (paper, session, deck) opens its page: the card's first link, unless the tap was on another
+// link or control, a page handled it (selecting in the library), or the reader was selecting text.
+document.addEventListener('click', (e) => {
+  if (e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  const card = e.target.closest('li.paper, .tap-card');
+  if (!card || e.target.closest('a, button, input, select, textarea, label, .pick') || document.body.classList.contains('selecting')) return;
+  if (String(getSelection?.() || '').length) return;
+  const a = card.querySelector('a[href^="#/"]');
+  if (a) location.hash = a.getAttribute('href');
+});
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 render();

@@ -38,7 +38,7 @@ const noSideScroll = (page) => page.evaluate(() => document.documentElement.scro
 test('add by DOI, upload own PDF, search notes and PDF text, open at the page, reading list', async ({ page }) => {
   const { files } = await workerApi(page, PROJECT);
   await signInAsMember(page, 'res1@example.org');
-  await page.goto(`/?emulator=${PROJECT}#/`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
 
@@ -119,7 +119,7 @@ test('add by DOI, upload own PDF, search notes and PDF text, open at the page, r
 test('bulk import reads DOIs from the PDFs, names the rest from the file, skips repeats', async ({ page }) => {
   const { files } = await workerApi(page, PROJECT);
   await signInAsMember(page, 'res2@example.org');
-  await page.goto(`/?emulator=${PROJECT}#/`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await page.getByRole('link', { name: 'Import PDFs' }).click();
   const pdfs = [
@@ -153,7 +153,7 @@ test('bulk import reads DOIs from the PDFs, names the rest from the file, skips 
 test('ATOTW PDFs with no printed DOI are found by the number in the file name or on the page', async ({ page }) => {
   await workerApi(page, PROJECT);
   await signInAsMember(page, 'res3@example.org');
-  await page.goto(`/?emulator=${PROJECT}#/`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   await page.reload();
   await page.getByRole('link', { name: 'Import PDFs' }).click();
   await page.getByLabel('PDF files').setInputFiles([

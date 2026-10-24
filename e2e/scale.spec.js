@@ -10,7 +10,7 @@ const at = (ms) => ({ timestampValue: new Date(ms).toISOString() });
 const T0 = Date.UTC(2026, 0, 1);
 
 async function signIn(page, email) {
-  await page.goto(`/?emulator=${PROJECT}`);
+  await page.goto(`/?emulator=${PROJECT}#/library`);
   return page.evaluate(async (e) => { await window.__jc.signIn(e); return window.__jc.auth.currentUser.uid; }, email);
 }
 async function makeMember(page, uid, email) {
