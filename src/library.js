@@ -221,8 +221,8 @@ async function renderSearch() {
   const slideIds = () => new Set([...papers].filter(([, p]) => slidesFor(p)).map(([id]) => id));
   withTimeout(loadSlides(), 8000, 'slides').then((m) => { rowCtx.slides = m; if (!page.isConnected) return; x.slides = slideIds(); show(); }, why('slidesError'));
   // The dot on rows where I have a note comes from one small doc; notes from before it existed are found once.
-  withTimeout(loadNoted(c.db, c.user.uid), 8000, 'noted').then((n) => { rowCtx.noted = n; if (page.isConnected) show(); }, why('notedError'));
-  real.then((full) => scanNoted(c.db, c.user.uid, full.papers.keys())).then((n) => { rowCtx.noted = n; if (page.isConnected) show(); }).catch(why('notedScanError'));
+  withTimeout(loadNoted(c.db, c.user.uid), 8000, 'noted').then((n) => { rowCtx.noted = n; if (page.isConnected && Object.keys(n).length) show(); }, why('notedError'));
+  real.then((full) => scanNoted(c.db, c.user.uid, full.papers.keys())).then((n) => { rowCtx.noted = n; if (page.isConnected && Object.keys(n).length) show(); }).catch(why('notedScanError'));
   withTimeout(loadSearches(c.db, c.user.uid), 8000, 'searches').then((l) => { saved = l; if (page.isConnected) { drawChips(); drawSave(); } }, why('searchesError'));
   if (cat.partial) {
     real.then((full) => { if (page.isConnected && cat.partial) { cat = full; papers = full.papers; redraw(); } })
