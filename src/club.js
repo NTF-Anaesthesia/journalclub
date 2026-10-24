@@ -1,10 +1,10 @@
 // Journal club pages: home (next session), the Plan a session sheet, session pages.
-import qrcode from 'qrcode-generator';
 import { decodeEntities } from './abstract.js';
 import {
   doc, getDoc, getDocs, collection, collectionGroup, setDoc, updateDoc, query, where, orderBy,
-  writeBatch, serverTimestamp, Timestamp,
+  writeBatch, serverTimestamp, Timestamp, onSnapshot, deleteDoc, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
+import { sheet, snack } from './bulk.js';
 
 import { dirty as dirtyLibrary, loadLibrary } from './catalogue.js';
 import { personIndex } from './people.js';
@@ -12,7 +12,7 @@ import { isoDay, renderCalendar } from './calendar.js';
 import { indexSlideText, dirtySlides } from './decks.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
-  sessionMarkdown, csvExport,
+  sessionMarkdown, csvExport, takeHomePoints, rankPoints, authorsShort,
 } from './discussion.js';
 import { fieldEditor, discussionForm, discussionView } from './discussion-ui.js';
 
@@ -64,6 +64,8 @@ const PAST_SHOWN = 5;
 const daysAway = (s) => Math.round((s.date.toMillis() - startOfToday().toMillis()) / 86400000);
 const whenText = (s) => { const n = daysAway(s); return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : n < 7 ? `In ${n} days` : ''; };
 const myRole = (s) => (s.presenterUid === c.user.uid ? 'You present' : s.coordinatorUid === c.user.uid ? 'You coordinate' : '');
+// The first two of the presenter's take-home points, one line each, under a session card.
+const takeLines = (s) => { const t = takeHomePoints(s).slice(0, 2); return t.length ? `<span class="takelines">${t.map((x) => `<span class="takeline">${c.esc(x)}</span>`).join('')}</span>` : ''; };
 const roleBadge = (s) => (myRole(s) ? ` <span class="badge">${myRole(s)}</span>` : '');
 
 async function renderHome() {
@@ -81,7 +83,7 @@ async function renderHome() {
   ss.forEach((d) => {
     const s = d.data();
     const li = c.el(`<li class="paper"><a href="#/session/${d.id}">${c.esc(fmtDate(s.date))}</a>
-      <a href="#/session/${d.id}" class="plain">${c.esc(decodeEntities(s.paperTitle))}</a><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}${roleBadge(s)}</span></li>`);
+      <a href="#/session/${d.id}" class="plain">${c.esc(decodeEntities(s.paperTitle))}</a><span class="muted">${c.esc(s.presenterName || '')}${s.coordinatorName ? ` · ${c.esc(s.coordinatorName)}` : ''}${roleBadge(s)}</span>${takeLines(s)}</li>`);
     if (s.date.toMillis() >= today) { if (!next) next = { id: d.id, ...s }; else up.append(li); } else past.prepend(li);
   });
   if (!up.children.length) up.append(c.el('<li class="muted">None planned.</li>'));
@@ -105,7 +107,7 @@ async function renderHome() {
       ? `<a href="#/plan/-/${next.id}">${myRole(next) === 'You present' && !hasSlides ? 'Add slides' : 'Edit session'}</a>` : '';
     box.replaceChildren(c.el(`<p class="next tap-card"><a id="nexts" href="#/session/${next.id}"><strong>${c.esc(fmtDate(next.date))}</strong></a>${roleBadge(next)}<br>
         <span class="when">${c.esc(when)}</span><br>
-        <a href="#/session/${next.id}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span></p>`),
+        <a href="#/session/${next.id}">${c.esc(decodeEntities(next.paperTitle))}</a><br><span class="muted">Presenter: ${c.esc(next.presenterName || '—')}${next.coordinatorName ? ` · Coordinator: ${c.esc(next.coordinatorName)}` : ''}</span>${takeLines(next)}</p>`),
       c.el(`<p class="actions">${next.locked ? '' : `<a href="#/point/${next.id}">${mine?.exists() ? 'Edit your take-home point' : 'Add take-home point'}</a>`}
         ${hasSlides ? `<a href="#/session/${next.id}">Slides</a>` : ''}${edit}</p>`));
     const url = safeUrl(next.teamsUrl || club.teamsUrl);
@@ -389,82 +391,185 @@ async function deleteSession(snap) {
   location.hash = '#/';
 }
 
-const sessionUrl = (sid) => `${location.origin}/#/point/${sid}`;
-const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); };
+const PDF_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
+// Session page: the paper card, the presenter's take-home points, summary, slides, discussion, members' points (live, one
+// each, with me-too) and my private notes for the session.
 async function renderSession(sid) {
   const view = c.view;
   const snap = await getDoc(doc(c.db, 'sessions', sid));
   if (!snap.exists()) { view.replaceChildren(c.el('<section class="card"><h1>Not found</h1><p><a href="#/">Club</a></p></section>')); return; }
   const s = { id: sid, ...snap.data() };
-  const [club, template, pts] = await Promise.all([loadClub(), loadTemplate(), getDocs(collection(c.db, 'sessions', sid, 'points'))]);
-  const points = pts.docs.map((d) => ({ ...d.data(), mine: d.id === c.user.uid }));
-  const myPoint = points.some((p) => p.mine);
+  const me = c.user.uid;
+  const noteRef = doc(c.db, 'users', me, 'sessionNotes', sid);
+  const [club, template, paperSnap, paperNote, sessionNote] = await Promise.all([
+    loadClub(), loadTemplate(),
+    s.paperId ? getDoc(doc(c.db, 'papers', s.paperId)).catch(() => null) : null,
+    s.paperId ? getDoc(doc(c.db, 'papers', s.paperId, 'notes', me)).catch(() => null) : null,
+    getDoc(noteRef).catch(() => null)]);
+  const paper = paperSnap?.exists() ? paperSnap.data() : null;
   const fields = sessionFields(s, template);
-  const slides = safeUrl(s.slides);
   const sf = s.slidesFile?.kind ? s.slidesFile : null;
+  const slides = safeUrl(s.slides);
   const slidesHtml = sf
-    ? `${sf.pdf ? '<button class="link" id="spdf">Open PDF</button>' : ''}${sf.kind !== 'pdf' ? '<button class="link" id="sorig">Download PowerPoint</button>' : ''}
+    ? `${sf.pdf ? `<a class="button" id="sview" href="#/view/sess_${c.esc(sid)}">Open slides</a>` : ''}${sf.kind !== 'pdf' ? '<button type="button" class="link" id="sorig">Download PowerPoint</button>' : ''}
        <span class="muted">${c.esc(sf.name || '')} · ${fmtSize(sf.size || 0)}${sf.kind !== 'pdf' && !sf.pdf ? ' · no PDF copy' : ''}</span>`
     : slides ? `<a href="${c.esc(slides)}" target="_blank" rel="noopener">Open slides</a>` : '<span class="muted">No slides yet.</span>';
   document.title = `Session ${fmtDate(s.date)} · Journal club`;
-  const paperSnap = s.paperId ? await getDoc(doc(c.db, 'papers', s.paperId)).catch(() => null) : null;
-  const paper = paperSnap?.exists() ? paperSnap.data() : null;
   const pmeta = paper ? [paper.journal, paper.year].filter(Boolean).join(' · ') : '';
-  const short = paper?.abstract ? decodeEntities(paper.abstract).replace(/\s+/g, ' ').slice(0, 220).replace(/\s+\S*$/, '') + (paper.abstract.length > 220 ? '…' : '') : '';
+  const authors = authorsShort(paper?.authors || []);
   const venue = s.venue || s.location || '';
+  const title = c.esc(decodeEntities(s.paperTitle));
+  const myNote = (paperNote?.exists() && paperNote.data().text) || '';
+  const take = takeHomePoints(s);
   const page = c.el(`<section class="card sessionpage"><p class="eyebrow">SESSION</p><p class="back"><a href="#/">← Club</a></p>
-    <div class="session-head"><h1>${c.esc(fmtDate(s.date))}</h1>
+    <div class="session-head"><button type="button" class="more-btn no-print" id="smore" aria-label="More actions" aria-haspopup="dialog">⋯</button>
+    <h1>${c.esc(fmtDate(s.date))}</h1>
     <p class="muted">${c.esc(startTimeText(s, club))}${venue ? ` · ${c.esc(venue)}` : ''}</p>
     <p>Presenter: ${c.esc(s.presenterName || '—')}${s.coordinatorName ? `<br>Coordinator: ${c.esc(s.coordinatorName)}` : ''}</p>
     ${s.locked ? '<p class="muted">Locked: read-only.</p>' : ''}
     <p class="actions no-print" id="sacts"></p></div>
-    <div class="paper-card" id="spaper"><p class="eyebrow">PAPER</p><p><strong>${c.esc(decodeEntities(s.paperTitle))}</strong></p>
-      ${pmeta ? `<p class="muted">${c.esc(pmeta)}</p>` : ''}${short ? `<p>${c.esc(short)}</p>` : ''}
-      ${s.paperId ? `<p><a class="button" id="openpaper" href="#/paper/${c.esc(s.paperId)}">Open paper</a></p>` : ''}</div>
+    <div class="paper-card" id="spaper"><p class="eyebrow">PAPER</p>
+      <p>${s.paperId ? `<a class="card-link" id="openpaper" href="#/paper/${c.esc(s.paperId)}"><strong>${title}</strong></a>` : `<strong>${title}</strong>`}</p>
+      ${authors ? `<p class="muted">${c.esc(authors)}</p>` : ''}${pmeta ? `<p class="muted">${c.esc(pmeta)}</p>` : ''}
+      ${s.paperId ? `<p class="note-peek${myNote ? '' : ' faint'}">${myNote ? c.esc(myNote) : 'Add a note'}</p>` : ''}
+      ${paper?.file ? `<a class="pdf-pill card-pill no-print" id="spdfpill" href="#/read/${c.esc(s.paperId)}" aria-label="Open the PDF">${PDF_ICON}PDF</a>` : ''}</div>
+    ${take.length ? `<div id="stake"><h2>Take-home points</h2><ul class="takehome">${take.map((t) => `<li>${c.esc(t)}</li>`).join('')}</ul></div>` : ''}
     <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
     <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
-    <h2>Members' points</h2><ul class="list" id="spts"></ul>
-    <div id="sqr"></div>
-    <span class="actions no-print"><button class="link" id="scopy">Copy as text</button><button class="link" id="sprint">Print / PDF</button></span>
-    ${mayPlanSession(s) ? `<p class="no-print"><a class="button primary" href="#/plan/-/${c.esc(sid)}">Edit session</a></p>` : ''}</section>`);
+    <h2>Members' points</h2><ul class="list" id="spts"><li class="muted">Loading…</li></ul>
+    <p class="actions no-print" id="sshare2"></p>
+    <h2>My notes</h2><p class="muted">Only you can see these. They are not searched or shared, and Copy as text leaves them out.</p>
+    <textarea id="mynote" rows="5" maxlength="8000" aria-label="My notes on this session"></textarea>
+    <p class="muted" id="mynotemsg" role="status"></p></section>`);
   view.replaceChildren(page);
 
-  const disc = discussionView(c, fields, s.discussion?.answers);
+  const disc = discussionView(c, fields.filter((f) => f.id !== 'takehome'), s.discussion?.answers);
   if (disc.children.length) { $in(page, '#sdisc').append(c.el('<h2>Discussion</h2>'), disc); }
-  const ul = $in(page, '#spts');
-  points.forEach((p) => ul.append(c.el(`<li><span>${c.esc(p.text)} <span class="muted">${c.esc(p.name || '')}${p.mine ? ' (you)' : ''}</span></span></li>`)));
-  if (!points.length) ul.append(c.el('<li class="muted">None yet.</li>'));
-  // Join on Teams (in its window) and your point sit under the session's details, not at the foot of the page.
+  if (sf && sf.kind !== 'pdf') $in(page, '#sorig').onclick = () => downloadSlides(sid, sf.name);
+
+  // Join on Teams (in its window) and Share your point sit under the session's details.
   const acts = $in(page, '#sacts');
   const url = safeUrl(s.teamsUrl || club.teamsUrl);
   if (url && inJoinWindow(startMillis(s, club.time), Date.now())) {
     acts.append(c.el(`<a class="button primary" id="join" href="${c.esc(url)}" target="_blank" rel="noopener">Join on Teams</a>`));
   }
-  if (!s.locked) {
-    acts.append(c.el(`<a class="button" id="plink" href="#/point/${c.esc(sid)}">${myPoint ? 'Edit your point' : 'Add your point'}</a>`));
-    $in(page, '#sqr').append(c.el(`<div class="no-print"><h3>${c.esc(club.pointPrompt)}</h3>
-      <p class="muted">Scan to add a point from your phone.</p>
-      <div class="qr" style="max-width:180px" aria-label="QR code">${qrSvg(sessionUrl(sid))}</div></div>`));
-  }
-  $in(page, '#scopy').onclick = async (e) => {
-    try { await navigator.clipboard.writeText(sessionMarkdown(s, template, points)); e.target.textContent = 'Copied'; }
-    catch { e.target.textContent = 'Copy failed'; }
-  };
-  $in(page, '#sprint').onclick = () => window.print();
-  if (sf?.pdf) $in(page, '#spdf').onclick = () => openSlides(sid, 'pdf', sf.name);
-  if (sf && sf.kind !== 'pdf') $in(page, '#sorig').onclick = () => openSlides(sid, 'original', sf.name);
 
+  // Members' points: live, one per member, most agreed first.
+  const ptsRef = collection(c.db, 'sessions', sid, 'points');
+  let points = [];
+  const shareBtns = [];
+  const shareLabel = () => (points.some((p) => p.mine) ? 'Edit your point' : 'Share your point');
+  if (!s.locked) {
+    const top = c.el(`<button type="button" class="button" id="sshare">${shareLabel()}</button>`);
+    const low = c.el('<button type="button" class="button" id="sshare-low">Share your point</button>');
+    acts.append(top);
+    $in(page, '#sshare2').append(low, c.el('<span class="muted">Add yours if you missed the discussion</span>'));
+    shareBtns.push(top, low);
+    shareBtns.forEach((b) => { b.onclick = () => pointSheet(sid, club, points.find((p) => p.mine)); });
+  }
+  const ul = $in(page, '#spts');
+  const drawPoints = () => {
+    ul.replaceChildren();
+    rankPoints(points).forEach((p) => {
+      const n = p.plus?.length || 0;
+      const li = c.el(`<li class="pt"><span class="pt-text">${c.esc(p.text)} <span class="muted">${c.esc(p.name || '')}${p.mine ? ' (you)' : ''}</span></span><span class="pt-acts no-print"></span></li>`);
+      const box = $in(li, '.pt-acts');
+      const ref = doc(ptsRef, p.uid);
+      if (p.mine) {
+        if (n) box.append(c.el(`<span class="muted" aria-label="${n} agree">+${n}</span>`));
+        if (!s.locked) {
+          const ed = c.el('<button type="button" class="link" aria-label="Edit your point">Edit</button>');
+          ed.onclick = () => pointSheet(sid, club, p);
+          const del = c.el('<button type="button" class="link danger" aria-label="Delete your point">Delete</button>');
+          del.onclick = async () => {
+            if (!confirm('Delete your point?')) return;
+            try { await deleteDoc(ref); } catch { snack(c, 'Could not delete your point.'); }
+          };
+          box.append(ed, del);
+        }
+      } else if (!s.locked) {
+        const on = (p.plus || []).includes(me);
+        const b = c.el(`<button type="button" class="plus-btn" aria-pressed="${on}" aria-label="${on ? 'Withdraw your agreement' : 'I agree with this point'}${n ? ` (${n} agree)` : ''}">+1${n ? ` · ${n}` : ''}</button>`);
+        b.onclick = () => updateDoc(ref, { plus: on ? arrayRemove(me) : arrayUnion(me) }).catch(() => snack(c, 'Could not save that.'));
+        box.append(b);
+      } else if (n) box.append(c.el(`<span class="muted">+${n}</span>`));
+      ul.append(li);
+    });
+    if (!points.length) ul.append(c.el('<li class="muted">None yet.</li>'));
+    shareBtns.forEach((b) => { b.textContent = shareLabel(); });
+  };
+  const unsub = onSnapshot(ptsRef, (qs) => {
+    if (!page.isConnected) { unsub(); return; }
+    points = qs.docs.map((d) => ({ ...d.data(), uid: d.id, mine: d.id === me }));
+    drawPoints();
+  }, () => { ul.replaceChildren(c.el('<li class="muted">Could not load points.</li>')); });
+  window.addEventListener('hashchange', () => unsub(), { once: true });
+
+  // My notes: private to me, saved a moment after typing and when I leave the box or the page.
+  const ta = $in(page, '#mynote'); const nmsg = $in(page, '#mynotemsg');
+  ta.value = (sessionNote?.exists() && sessionNote.data().text) || '';
+  let pending = false; let timer = null;
+  const saveNote = async () => {
+    clearTimeout(timer);
+    if (!pending) return;
+    pending = false;
+    const text = ta.value.trim();
+    try {
+      if (!text) await deleteDoc(noteRef);
+      else await setDoc(noteRef, { text, paperId: s.paperId || '', paperTitle: decodeEntities(s.paperTitle || '').slice(0, 400), date: s.date, updatedAt: serverTimestamp() });
+      nmsg.textContent = text ? 'Saved ✓' : '';
+    } catch { pending = true; nmsg.textContent = 'Could not save. Your note is still here.'; }
+  };
+  ta.oninput = () => { pending = true; nmsg.textContent = ''; clearTimeout(timer); timer = setTimeout(saveNote, 800); };
+  ta.onblur = saveNote;
+  window.addEventListener('hashchange', saveNote, { once: true });
+  window.addEventListener('pagehide', saveNote, { once: true });
+
+  // Overflow menu.
+  $in(page, '#smore').onclick = () => {
+    const d = sheet(c, 'Session actions', `<h2 class="sheet-title">Session</h2><ul class="list nav-list sheet-actions">
+      ${mayPlanSession(s) ? '<li><button type="button" id="medit">Edit session</button></li>' : ''}
+      <li><button type="button" id="mrefresh">Refresh</button></li><li><button type="button" id="mcopy">Copy as text</button></li>
+      <li><button type="button" id="mprint">Print / PDF</button></li></ul>`);
+    const $d = (sel) => d.querySelector(sel);
+    if ($d('#medit')) $d('#medit').onclick = () => { d.close(); location.hash = `#/plan/-/${sid}`; };
+    $d('#mrefresh').onclick = async () => { d.close(); await saveNote(); unsub(); renderSession(sid); };
+    $d('#mcopy').onclick = async () => {
+      d.close();
+      try { await navigator.clipboard.writeText(sessionMarkdown(s, template, points)); snack(c, 'Copied'); } catch { snack(c, 'Copy failed'); }
+    };
+    $d('#mprint').onclick = () => { d.close(); window.print(); };
+  };
 }
 
-// PDF opens in a new tab; PowerPoint downloads under its own name.
-async function openSlides(sid, which, name) {
-  const w = which === 'pdf' ? window.open('', '_blank') : null; // opened before the await so pop-up blockers allow it
-  const r = await apiFetch(`/api/slides/${sid}/${which}`);
-  if (!r.ok) { w?.close(); alert('Could not open the slides.'); return; }
+// The bottom sheet for sharing or editing my one point on a session (the point keeps its +1s: merge, not replace).
+function pointSheet(sid, club, mine) {
+  const d = sheet(c, mine ? 'Edit your point' : 'Share your point', `<h2 class="sheet-title">${c.esc(club.pointPrompt)}</h2>
+    <form class="stack" id="ptform"><label>${c.esc(club.pointPrompt)}<textarea id="ptext" rows="4" maxlength="500" required></textarea></label>
+    <div class="sheet-buttons"><button type="button" id="ptcancel">Cancel</button><button class="primary">${mine ? 'Update' : 'Save'}</button></div>
+    <p class="muted" id="ptmsg" role="status"></p></form>`);
+  const ta = d.querySelector('#ptext');
+  ta.value = mine?.text || '';
+  d.querySelector('#ptcancel').onclick = () => d.close();
+  d.querySelector('#ptform').onsubmit = async (e) => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    try {
+      await setDoc(doc(c.db, 'sessions', sid, 'points', c.user.uid), { text, name: c.member.name || c.user.email, updatedAt: serverTimestamp() }, { merge: true });
+      d.close();
+    } catch { d.querySelector('#ptmsg').textContent = 'Could not save.'; }
+  };
+  ta.focus();
+}
+
+// PowerPoint downloads under its own name.
+async function downloadSlides(sid, name) {
+  const r = await apiFetch(`/api/slides/${sid}/original`);
+  if (!r.ok) { alert('Could not open the slides.'); return; }
   const url = URL.createObjectURL(await r.blob());
-  if (which === 'pdf') { if (w) w.location.href = url; else location.href = url; return; }
   const a = document.createElement('a');
   a.href = url; a.download = name || 'slides.pptx';
   document.body.append(a); a.click(); a.remove();
@@ -562,7 +667,7 @@ async function renderPoint(sid) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     try {
-      await setDoc(ref, { text: $in(form, '#ptext').value.trim(), name: c.member.name || c.user.email, updatedAt: serverTimestamp() });
+      await setDoc(ref, { text: $in(form, '#ptext').value.trim(), name: c.member.name || c.user.email, updatedAt: serverTimestamp() }, { merge: true });
       $in(form, '#pmsg').replaceChildren('Saved. You can edit it here until the session is locked. ',
         c.el(`<a href="#/session/${c.esc(sid)}">Back to the session</a>`));
       $in(form, 'button').textContent = 'Update';

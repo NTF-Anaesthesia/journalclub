@@ -466,6 +466,66 @@ test('points: one per member per session, own only, closed when locked', async (
   await assertFails(setDoc(pt('mem1', 'm@x.org'), { ...body, text: 'Late' }));
 });
 
+test('points: me-too (+1) adds or removes only your own uid, never on your own point or a locked session', async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'members/mem2'), { email: 'm2@x.org', name: 'M2', role: 'member', inviteId: 'seed' });
+    await setDoc(doc(db, 'sessions/s1'), { date: future(), paperId: 'p1', paperTitle: 'T', presenterUid: 'mem1', presenterName: 'M',
+      summary: '', slides: '', createdBy: 'admin1', createdAt: new Date() });
+    await setDoc(doc(db, 'sessions/s1/points/mem1'), { text: 'Use less opioid', name: 'M', updatedAt: new Date() });
+  });
+  const mine = (uid, email) => doc(as(uid, email), 'sessions/s1/points/mem1');
+  // Another member agrees, then withdraws.
+  await assertSucceeds(updateDoc(mine('mem2', 'm2@x.org'), { plus: ['mem2'] }));
+  await assertSucceeds(updateDoc(mine('mem2', 'm2@x.org'), { plus: [] }));
+  await assertSucceeds(updateDoc(mine('mem2', 'm2@x.org'), { plus: ['mem2'] }));
+  // Not someone else's uid, not two at once, not twice, not a stranger's removal.
+  await assertFails(updateDoc(mine('admin1', 'a@x.org'), { plus: ['mem2', 'someone'] }));
+  await assertFails(updateDoc(mine('admin1', 'a@x.org'), { plus: ['mem2', 'admin1', 'extra'] }));
+  await assertFails(updateDoc(mine('admin1', 'a@x.org'), { plus: [] }));
+  await assertFails(updateDoc(mine('mem2', 'm2@x.org'), { plus: ['mem2', 'mem2'] }));
+  await assertSucceeds(updateDoc(mine('admin1', 'a@x.org'), { plus: ['mem2', 'admin1'] }));
+  // Nothing else on the point changes through a +1.
+  await assertFails(updateDoc(mine('mem2', 'm2@x.org'), { plus: ['mem2', 'admin1'], text: 'Hijacked' }));
+  await assertFails(updateDoc(mine('nobody', 'n@x.org'), { plus: ['mem2', 'admin1', 'nobody'] }));
+  // The owner edits the text but cannot touch +1s, and cannot +1 their own point.
+  const body = { text: 'Edited', name: 'M', updatedAt: serverTimestamp() };
+  await assertFails(setDoc(mine('mem1', 'm@x.org'), { ...body, plus: ['mem1'] }));
+  await assertFails(setDoc(mine('mem1', 'm@x.org'), body));
+  await assertSucceeds(setDoc(mine('mem1', 'm@x.org'), { ...body, plus: ['mem2', 'admin1'] }));
+  await assertSucceeds(setDoc(mine('mem1', 'm@x.org'), body, { merge: true }));
+  await assertFails(updateDoc(mine('mem1', 'm@x.org'), { plus: ['mem2', 'admin1', 'mem1'] }));
+  // Locked: no +1 either.
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), 'sessions/s1'), { locked: true }));
+  await assertFails(updateDoc(mine('mem2', 'm2@x.org'), { plus: ['admin1'] }));
+});
+
+test('session notes: only the owner reads or writes them, admins included', async () => {
+  const note = (db, uid = 'mem1', sid = 's1') => doc(db, 'users', uid, 'sessionNotes', sid);
+  const body = { text: 'My private thoughts', paperId: 'p1', paperTitle: 'T', date: future(), updatedAt: serverTimestamp() };
+  const m1 = as('mem1', 'm@x.org'); const a1 = as('admin1', 'a@x.org');
+  await assertSucceeds(setDoc(note(m1), body));
+  await assertSucceeds(getDoc(note(m1)));
+  await assertSucceeds(getDocs(collection(m1, 'users/mem1/sessionNotes')));
+  // Not another member, not an admin, not signed out or a non-member; not as a group read either.
+  await assertFails(getDoc(note(a1)));
+  await assertFails(getDoc(doc(a1, 'users/mem1/sessionNotes/s1')));
+  await assertFails(getDocs(collection(a1, 'users/mem1/sessionNotes')));
+  await assertFails(getDocs(collectionGroup(a1, 'sessionNotes')));
+  await assertFails(getDocs(collectionGroup(m1, 'sessionNotes')));
+  await assertFails(getDoc(doc(as('nobody', 'n@x.org'), 'users/mem1/sessionNotes/s1')));
+  await assertFails(getDoc(doc(stranger(), 'users/mem1/sessionNotes/s1')));
+  await assertFails(setDoc(doc(a1, 'users/mem1/sessionNotes/s1'), body));
+  await assertFails(deleteDoc(doc(a1, 'users/mem1/sessionNotes/s1')));
+  await assertFails(setDoc(doc(a1, 'users/admin1/sessionNotes/s1'), { ...body, extra: 1 }));
+  // Shape: bounded text, no stray fields, server time.
+  await assertFails(setDoc(note(m1, 'mem1', 's2'), { ...body, text: 'x'.repeat(8001) }));
+  await assertFails(setDoc(note(m1, 'mem1', 's2'), { ...body, shared: true }));
+  await assertFails(setDoc(note(m1, 'mem1', 's2'), { ...body, updatedAt: new Date() }));
+  await assertSucceeds(setDoc(note(m1, 'mem1', 's2'), { text: 'Only the text', updatedAt: serverTimestamp() }));
+  await assertSucceeds(deleteDoc(note(m1)));
+});
+
 test('config: members read the Teams link; only admins write it', async () => {
   const cfg = { teamsUrl: 'https://teams.example/m', pointPrompt: 'Your take-home point', time: '16:00', updatedBy: 'admin1', updatedAt: serverTimestamp() };
   await assertSucceeds(setDoc(doc(as('admin1', 'a@x.org'), 'config/club'), cfg));
