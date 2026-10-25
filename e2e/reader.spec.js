@@ -101,7 +101,11 @@ test('airplane mode: the shell loads and a starred PDF opens from the offline co
   await expect(page.getByRole('heading', { name: 'Reversal of neuromuscular block' })).toBeVisible();
   await expect(page.getByText('Offline copy')).toBeVisible();
   // Let the worker finish caching what the page loaded.
-  await page.waitForTimeout(1500);
+  await expect.poll(() => page.evaluate(async () => {
+    const c = await caches.open('jc-shell-v1');
+    const chunks = performance.getEntriesByType('resource').map((r) => new URL(r.name)).filter((u) => u.origin === location.origin && u.pathname.startsWith('/chunks/'));
+    return (await Promise.all(['/', '/app.js', ...chunks.map((u) => u.pathname)].map((u) => c.match(u)))).every(Boolean);
+  })).toBe(true);
 
   await context.setOffline(true);
   await page.goto(`/?emulator=${PROJECT}#/read/rd1/3`);
