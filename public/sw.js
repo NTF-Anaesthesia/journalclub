@@ -1,12 +1,18 @@
 // App shell offline. Network first, so a deploy is picked up at once; the cached copy answers when the network
 // does not. Hashed chunks never change and are served from the cache first. /api/ and sign-in (/__/) are never
 // touched here: PDFs for offline reading are kept by the page itself (src/offline.js), not by this worker.
-const SHELL = 'jc-shell-v1';
+const SHELL = 'jc-shell-v2';
 const CORE = ['/', '/style.css', '/app.js', '/manifest.webmanifest', '/pdf.worker.min.mjs'];
 const KIT = 'https://design.anantf.com/';
+// The app core's theme at the version src/kit.js pins (test/kit.test.js keeps them in step): its import closure and
+// theme.css. Exact versions never change, so these are served from the cache first.
+const UI = 'https://core.anawj.com/ui/1.0.0-rc.35/';
+const KIT_SHELL = [KIT + 'v1/tokens.css', KIT + 'v1/app.css', ...['theme.css', 'index.js', 'choice.js', 'colour.js', 'grid.js',
+  'guard.js', 'looks.js', 'looks/a.js', 'looks/b.js', 'looks/c.js', 'looks/d.js', 'looks/e.js', 'motion.js', 'palette-css.js',
+  'presets.js', 'schema.js', 'switch.js'].map((f) => `${UI}theme/${f}`)];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(SHELL).then((c) => Promise.allSettled(CORE.map((u) => c.add(u)))).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(SHELL).then((c) => Promise.allSettled([...CORE, ...KIT_SHELL].map((u) => c.add(u)))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith('jc-shell-') && k !== SHELL).map((k) => caches.delete(k))))
@@ -15,7 +21,7 @@ self.addEventListener('activate', (e) => {
 // The page lists what it has loaded so far (hashed chunks included); keep those too.
 self.addEventListener('message', (e) => {
   if (e.data?.type !== 'precache') return;
-  const urls = (e.data.urls || []).filter((u) => typeof u === 'string' && (u.startsWith(self.location.origin + '/') || u.startsWith(KIT)));
+  const urls = (e.data.urls || []).filter((u) => typeof u === 'string' && (u.startsWith(self.location.origin + '/') || u.startsWith(KIT) || u.startsWith(UI)));
   e.waitUntil(caches.open(SHELL).then((c) => Promise.allSettled(urls.map(async (u) => {
     if (u.includes('/api/') || u.includes('/__/') || await c.match(u)) return;
     await c.add(u);
@@ -26,6 +32,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request, url = new URL(req.url);
   if (req.method !== 'GET') return;
   const own = url.origin === self.location.origin;
+  if (req.url.startsWith(UI)) { e.respondWith(cacheFirst(req)); return; }
   if (!own && !req.url.startsWith(KIT)) return;
   if (own && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/__/') || url.pathname === '/sw.js')) return;
   if (own && url.pathname.startsWith('/chunks/')) { e.respondWith(cacheFirst(req)); return; }

@@ -1,5 +1,15 @@
 /* Journal Club on the NTF Anaesthesia app kit (https://design.anantf.com/v1/app.css). The shell (bar, tab bar,
-   main) uses kit classes in index.html; the pages' own markup is mapped onto the kit's look here. Light only. */
+   main) uses kit classes in index.html; the pages' own markup is mapped onto the kit's look here. Light only.
+   The app core's theme (app-ui, one pinned version: src/kit.js and sw.js name the same one) sits in the layer `kit`,
+   so app.css and this file, unlayered, win wherever both style a thing; `kitoff` takes back what the theme gives bare
+   elements that these screens never styled. */
+@layer kit, kitoff;
+@import url('https://core.anawj.com/ui/1.0.0-rc.35/theme/theme.css') layer(kit);
+/* The theme's rules for bare elements (body, headings, links, form controls, focus ring, selection) are taken back to
+   the browser's own, as these screens had them before; elements on core parts (ui-*) keep the theme. */
+@layer kitoff {
+  :is(body, h1, h2, h3, a, button, input, select, option, textarea):not([class*="ui-"]), :focus-visible:not([class*="ui-"]), ::selection { all: revert; }
+}
 :root { --muted:var(--app-muted); --line:var(--app-line); --accent:var(--app-wine); }
 .app-main { max-width:680px; margin:0 auto; }
 .app-bar-btn { color:var(--app-wine); }
