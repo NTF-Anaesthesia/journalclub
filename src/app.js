@@ -13,6 +13,9 @@ import { timing, withTimeout, diagnostics } from './catalogue.js';
 import { refresh as refreshOffline, clearAll as clearOffline, usage as offlineUsage, sizeText } from './offline.js';
 import { renderDeckRoute, DECK_ROUTES } from './decks.js';
 import { renderClubRoute, CLUB_ROUTES, loadClub, loadTemplate, saveClub, saveTemplate, fieldEditor } from './club.js';
+import { startKit } from './kit.js';
+
+startKit();
 
 const emulator = new URLSearchParams(location.search).has('emulator') && location.hostname === 'localhost';
 // On the live site sign-in runs on this origin: the Worker proxies /__/auth/ to Firebase, so the redirect is first-party.

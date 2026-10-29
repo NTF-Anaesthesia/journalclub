@@ -3,6 +3,11 @@
 Journal club and paper library for the department, at journalclub.anantf.com. Members only, by invitation.
 
 - `public/`: static shell. `src/app.js` is bundled to `public/app.js` (`npm run build`).
+- Look: the NTF kit (`design.anantf.com/v1/`: `tokens.css`, then `app.css` for the screens' `app-*` classes) over the
+  app core's theme (app-ui at one pinned version: `src/kit.js`, `public/style.css`, `public/sw.js`, kept in step by
+  `test/kit.test.js`). The core theme sits in the cascade layer `kit`, so the NTF kit and `style.css` win; `kitoff` takes
+  bare elements back to the browser's own. Light only. `SHOTS=1` runs `e2e/shots.spec.js`, a side-by-side look check
+  against another build on port 5001.
 - `worker/index.js`: Cloudflare Worker serving `public/` (`wrangler.jsonc`) and the members-only API:
   `GET /api/lookup?id=<DOI or PMID>` (Crossref, PubMed, Unpaywall; `worker/lookup.js`) and `/api/file/<paper>`
   (PDFs in the private R2 bucket `journalclub-files`), and `/api/slides/<session>` (`worker/slides.js`). The Worker has no service account: it reads the caller's own
