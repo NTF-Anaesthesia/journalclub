@@ -102,7 +102,7 @@ test('airplane mode: the shell loads and a starred PDF opens from the offline co
   await expect(page.getByText('Offline copy')).toBeVisible();
   // Let the worker finish caching what the page loaded.
   await expect.poll(() => page.evaluate(async () => {
-    const c = await caches.open('jc-shell-v1');
+    const c = await caches.open('jc-shell-v2');
     const chunks = performance.getEntriesByType('resource').map((r) => new URL(r.name)).filter((u) => u.origin === location.origin && u.pathname.startsWith('/chunks/'));
     return (await Promise.all(['/', '/app.js', ...chunks.map((u) => u.pathname)].map((u) => c.match(u)))).every(Boolean);
   })).toBe(true);
