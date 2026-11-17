@@ -79,3 +79,12 @@ test('authors: three, then et al.', () => {
   assert.equal(authorsShort(['A', 'B', 'C', 'D']), 'A, B, C et al.');
   assert.equal(authorsShort(), '');
 });
+
+test('pointsHtml: one line is a paragraph, several lines are bullets, typed bullets dropped', async () => {
+  const { pointsHtml, textPoints, takeHomePoints } = await import('../src/discussion.js');
+  const esc = (s) => String(s).replace(/</g, '&lt;');
+  assert.equal(pointsHtml(esc, 'Just one line.'), '<p class="abstract">Just one line.</p>');
+  assert.equal(pointsHtml(esc, 'First para.\n\n- Second <b>\n• Third'), '<ul class="takehome"><li>First para.</li><li>Second &lt;b></li><li>Third</li></ul>');
+  assert.deepEqual(textPoints('  * a \n\n-b'), ['a', '-b']);
+  assert.deepEqual(takeHomePoints({ discussion: { answers: { takehome: '- one\n- two' } } }), ['one', 'two']);
+});

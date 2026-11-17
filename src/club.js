@@ -12,7 +12,7 @@ import { isoDay, renderCalendar } from './calendar.js';
 import { indexSlideText, dirtySlides } from './decks.js';
 import {
   DEFAULT_FIELDS, DEFAULT_PROMPT, DEFAULT_TIME, normalizeFields, snapshot, sessionFields, startMillis, inJoinWindow,
-  sessionMarkdown, csvExport, takeHomePoints, rankPoints, authorsShort,
+  sessionMarkdown, csvExport, takeHomePoints, pointsHtml, rankPoints, authorsShort,
 } from './discussion.js';
 import { fieldEditor, discussionForm, discussionView } from './discussion-ui.js';
 
@@ -435,7 +435,7 @@ async function renderSession(sid) {
       ${s.paperId ? `<p class="note-peek${myNote ? '' : ' faint'}">${myNote ? c.esc(myNote) : 'Add a note'}</p>` : ''}
       ${paper?.file ? `<a class="pdf-pill card-pill no-print" id="spdfpill" href="#/read/${c.esc(s.paperId)}" aria-label="Open the PDF">${PDF_ICON}PDF</a>` : ''}</div>
     ${take.length ? `<div id="stake"><h2>Take-home points</h2><ul class="takehome">${take.map((t) => `<li>${c.esc(t)}</li>`).join('')}</ul></div>` : ''}
-    <h2>Summary</h2><p class="abstract" id="ssum">${s.summary ? c.esc(s.summary) : '<span class="muted">No summary yet.</span>'}</p>
+    <h2>Summary</h2><div id="ssum">${s.summary ? pointsHtml(c.esc, s.summary) : '<p class="abstract"><span class="muted">No summary yet.</span></p>'}</div>
     <h2>Slides</h2><p id="sslides">${slidesHtml}</p>
     <div id="sdisc"></div>
     <h2>Members' points</h2><ul class="list" id="spts"><li class="muted">Loading…</li></ul>
