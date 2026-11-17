@@ -6,10 +6,10 @@ const CORE = ['/', '/style.css', '/app.js', '/manifest.webmanifest', '/pdf.worke
 const KIT = 'https://design.anantf.com/';
 // The app core's theme at the version src/kit.js pins (test/kit.test.js keeps them in step): its import closure and
 // theme.css. Exact versions never change, so these are served from the cache first.
-const UI = 'https://core.anawj.com/ui/1.0.0-rc.35/';
+const UI = 'https://core.anawj.com/ui/1.0.0-rc.141/';
 const KIT_SHELL = [KIT + 'v1/tokens.css', KIT + 'v1/app.css', ...['theme.css', 'index.js', 'choice.js', 'colour.js', 'grid.js',
-  'guard.js', 'looks.js', 'looks/a.js', 'looks/b.js', 'looks/c.js', 'looks/d.js', 'looks/e.js', 'motion.js', 'palette-css.js',
-  'presets.js', 'schema.js', 'switch.js'].map((f) => `${UI}theme/${f}`)];
+  'guard.js', 'looks.js', 'looks/a.js', 'looks/b.js', 'looks/c.js', 'looks/d.js', 'looks/e.js', 'looks/ios.js', 'looks/m.js',
+  'm3.js', 'motion.js', 'palette-css.js', 'presets.js', 'schema.js', 'switch.js'].map((f) => `${UI}theme/${f}`), `${UI}icons/lucide.js`];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => Promise.allSettled([...CORE, ...KIT_SHELL].map((u) => c.add(u)))).then(() => self.skipWaiting()));

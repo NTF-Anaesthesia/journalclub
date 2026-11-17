@@ -1,5 +1,5 @@
 // Discussion form pieces: the admin's field editor and the rendered form people fill in.
-import { TYPES, normalizeFields, answerText, missingRequired } from './discussion.js';
+import { TYPES, normalizeFields, answerText, missingRequired, pointsHtml } from './discussion.js';
 
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'field';
 
@@ -87,7 +87,7 @@ export function discussionView(c, fields, answers) {
     const t = answerText(f, answers);
     if (!t) return;
     const body = f.type === 'list'
-      ? `<ul>${t.split(' | ').map((x) => `<li>${c.esc(x)}</li>`).join('')}</ul>` : `<p class="abstract">${c.esc(t)}</p>`;
+      ? `<ul>${t.split(' | ').map((x) => `<li>${c.esc(x)}</li>`).join('')}</ul>` : f.type === 'long' ? pointsHtml(c.esc, t) : `<p class="abstract">${c.esc(t)}</p>`;
     box.append(c.el(`<div><h3>${c.esc(f.label)}</h3>${body}</div>`));
   });
   return box;

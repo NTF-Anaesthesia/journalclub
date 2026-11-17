@@ -40,7 +40,19 @@ export function normalizeFields(raw) {
 export const snapshot = (fields) => normalizeFields(fields).map(({ id, label, type, max, options, note }) =>
   ({ id, label, type, ...(max ? { max } : {}), ...(options ? { options } : {}), ...(note ? { note } : {}) }));
 
-const asList = (v) => (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean);
+// One item per line; a typed "- ", "* " or "• " at the start is dropped (the page draws its own bullets).
+const BULLET = /^[-*•]\s+/;
+const asList = (v) => (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim().replace(BULLET, '').trim()).filter(Boolean);
+
+// Free text (summary, long discussion answers) as display points: each non-empty line is one point.
+export const textPoints = (v) => asList(String(v || ''));
+
+// HTML for free text: one line stays a paragraph, two or more lines become a bulleted list.
+export function pointsHtml(esc, v) {
+  const pts = textPoints(v);
+  if (pts.length < 2) return `<p class="abstract">${esc(pts[0] || '')}</p>`;
+  return `<ul class="takehome">${pts.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+}
 
 // The presenter's take-home points on a session (the discussion field `takehome`), as a list of lines.
 export const takeHomePoints = (s) => asList(s?.discussion?.answers?.takehome);
