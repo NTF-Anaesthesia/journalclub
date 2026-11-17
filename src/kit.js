@@ -1,7 +1,7 @@
 // The app core's theme (app-ui), loaded by URL at one pinned version. style.css imports the same version's theme.css
 // and sw.js keeps its files for offline use; test/kit.test.js checks the three agree. If the core cannot load, the app
 // opens as before on the NTF kit alone.
-export const UI = 'https://core.anawj.com/ui/1.0.0-rc.35/';
+export const UI = 'https://core.anawj.com/ui/1.0.0-rc.141/';
 
 export async function startKit() {
   try {
